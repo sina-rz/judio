@@ -1,14 +1,18 @@
 plugins {
     application
+    `maven-publish`
+    signing
 }
 
-group = "io.github.sinaraz"
+group = "io.github.sina-raz"
 version = "0.1.6"
 
 java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(25)
     }
+    withSourcesJar()
+    withJavadocJar()
 }
 
 repositories {
@@ -98,4 +102,52 @@ tasks.named<Javadoc>("javadoc") {
 tasks.jar {
     exclude("io/github/sinaraz/gui/**")
     exclude("io/github/sinaraz/cli/**")
+}
+
+publishing {
+    publications {
+        create<MavenPublication>("mavenJava") {
+            from(components["java"])
+
+            pom {
+                name.set("Judio")
+                description.set("Pure-Java audio playback library for JVM.")
+                url.set("https://github.com/sina-rz/judio")
+
+                licenses {
+                    license {
+                        name.set("MIT License")
+                        url.set("https://opensource.org/licenses/MIT")
+                        distribution.set("repo")
+                    }
+                }
+                developers {
+                    developer {
+                        id.set("sina-raz")
+                        name.set("Sina Raz")
+                    }
+                }
+                scm {
+                    connection.set("scm:git:git://github.com/sina-raz/judio.git")
+                    developerConnection.set("scm:git:ssh://github.com:sina-raz/judio.git")
+                    url.set("https://github.com/sina-raz/judio")
+                }
+            }
+        }
+    }
+    repositories {
+        maven {
+            name = "SonatypeCentral"
+
+            url = uri("https://central.sonatype.com/api/v1/publisher/upload")
+            credentials {
+                username = project.findProperty("sonatypeUsername") as String?
+                password = project.findProperty("sonatypePassword") as String?
+            }
+        }
+    }
+}
+
+signing {
+    sign(publishing.publications["mavenJava"])
 }
