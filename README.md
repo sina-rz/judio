@@ -11,6 +11,16 @@ installed on your computer.
 
 <img alt="judio&#39;s Swing player while a track plays" src="docs/screenshots/gui1.png" width="800"/>
 
+## Download 
+Judio is available on Maven Central
+
+`groupId` io.github.sina-rz
+
+`artifactId` judio
+
+`version`
+![](https://img.shields.io/maven-metadata/v.svg?metadataUrl=https%3A%2F%2Frepo1.maven.org%2Fmaven2%2Fio%2Fgithub%2Fsina-rz%2Fjudio%2Fmaven-metadata.xml&label=maven-central)
+
 ## Try it
 
 You need **JDK 25**. The Gradle wrapper is included, so you do not need to install Gradle.
