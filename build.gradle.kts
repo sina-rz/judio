@@ -1,10 +1,13 @@
+import java.util.Base64
+
 plugins {
     application
     `maven-publish`
     signing
+    id("tech.yanand.maven-central-publish") version "1.3.0"
 }
 
-group = "io.github.sina-raz"
+group = "io.github.sina-rz"
 version = "0.1.6"
 
 java {
@@ -40,7 +43,7 @@ application {
 tasks.register<JavaExec>("runGui") {
     group = "application"
     description = "Starts the Swing GUI player. Options: -PguiArgs=\"--null-audio song.mp3\""
-    classpath = sourceSets["main"].runtimeClasspath + configurations["guiOnly"]
+    classpath = sourceSets["main"].runtimeClasspath
     mainClass.set("io.github.sinaraz.gui.GuiMain")
     val guiArgs = (findProperty("guiArgs") as String?) ?: ""
     args = guiArgs.split(" ").filter { it.isNotBlank() }
@@ -55,6 +58,10 @@ sourceSets {
     create("bench") {
         compileClasspath += sourceSets.main.get().output + sourceSets.main.get().compileClasspath
         runtimeClasspath += output + compileClasspath
+    }
+    main {
+        compileClasspath += guiOnly
+        runtimeClasspath += guiOnly
     }
 }
 
@@ -123,26 +130,15 @@ publishing {
                 }
                 developers {
                     developer {
-                        id.set("sina-raz")
+                        id.set("sina-rz")
                         name.set("Sina Raz")
                     }
                 }
                 scm {
-                    connection.set("scm:git:git://github.com/sina-raz/judio.git")
-                    developerConnection.set("scm:git:ssh://github.com:sina-raz/judio.git")
-                    url.set("https://github.com/sina-raz/judio")
+                    connection.set("scm:git:git://github.com/sina-rz/judio.git")
+                    developerConnection.set("scm:git:ssh://github.com:sina-rz/judio.git")
+                    url.set("https://github.com/sina-rz/judio")
                 }
-            }
-        }
-    }
-    repositories {
-        maven {
-            name = "SonatypeCentral"
-
-            url = uri("https://central.sonatype.com/api/v1/publisher/upload")
-            credentials {
-                username = project.findProperty("sonatypeUsername") as String?
-                password = project.findProperty("sonatypePassword") as String?
             }
         }
     }
@@ -150,4 +146,14 @@ publishing {
 
 signing {
     sign(publishing.publications["mavenJava"])
+}
+
+mavenCentral {
+    // Reads the credentials you put in ~/.gradle/gradle.properties
+    authToken.set(
+        Base64.getEncoder().encodeToString(
+            "${project.findProperty("sonatypeUsername")}:${project.findProperty("sonatypePassword")}".toByteArray()
+        )
+    )
+    publishingType.set("AUTOMATIC") // or "USER_MANAGED"
 }
