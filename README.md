@@ -5,7 +5,6 @@ It is written in pure Java, so it needs no extra software
 installed on your computer.
 
 
-[![Build](https://img.shields.io/github/actions/workflow/status/sinaraz/judio/gradle.yml?branch=main)](https://github.com/sinaraz/judio/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Java](https://img.shields.io/badge/JDK-25-orange.svg)](#requirements)
 
