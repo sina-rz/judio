@@ -15,13 +15,14 @@ repositories {
     mavenCentral()
 }
 
+val guiOnly by configurations.creating
+
 dependencies {
     // JLayer 1.0.1 - LGPL (see README "Dependencies"). Pure-Java MPEG-1/2/2.5
     // Layer I/II/III decoder. Referenced ONLY from audio.decoder.Mp3Decoder.
     implementation("javazoom:jlayer:1.0.1")
 
-    //gui only
-    implementation("com.formdev:flatlaf:3.7.2")
+    guiOnly("com.formdev:flatlaf:3.7.2")
 
     testImplementation(platform("org.junit:junit-bom:5.13.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -35,7 +36,7 @@ application {
 tasks.register<JavaExec>("runGui") {
     group = "application"
     description = "Starts the Swing GUI player. Options: -PguiArgs=\"--null-audio song.mp3\""
-    classpath = sourceSets["main"].runtimeClasspath
+    classpath = sourceSets["main"].runtimeClasspath + configurations["guiOnly"]
     mainClass.set("io.github.sinaraz.gui.GuiMain")
     val guiArgs = (findProperty("guiArgs") as String?) ?: ""
     args = guiArgs.split(" ").filter { it.isNotBlank() }
@@ -90,4 +91,11 @@ tasks.test {
 
 tasks.named<Javadoc>("javadoc") {
     exclude("io/github/sinaraz/internal/**")
+    exclude("io/github/sinaraz/cli/**")
+    exclude("io/github/sinaraz/gui/**")
+}
+
+tasks.jar {
+    exclude("io/github/sinaraz/gui/**")
+    exclude("io/github/sinaraz/cli/**")
 }
