@@ -452,7 +452,7 @@ public final class JudioPlayer implements AutoCloseable {
 
     /**
      * Goes back one step. If the position is past {@link PlaybackConfig#previousRestartThreshold()},
-     * the current track restarts from the beginning. Otherwise the previous queue entry starts.
+     * the current track restarts from the beginning. Otherwise, the previous queue entry starts.
      */
     public void previous() {
         synchronized (gate) {
@@ -519,7 +519,7 @@ public final class JudioPlayer implements AutoCloseable {
     }
 
     /**
-     * Sets the playback speed. By default this changes the pitch too, as with a tape played faster or
+     * Sets the playback speed. By default, this changes the pitch too, as with a tape played faster or
      * slower; {@link #setPreservePitch(boolean)} keeps the pitch instead. Values are clamped to the speed
      * range in {@link PlaybackConfig}.
      *
