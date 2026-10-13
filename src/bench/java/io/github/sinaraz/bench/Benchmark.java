@@ -11,13 +11,7 @@ import io.github.sinaraz.audio.AudioDecoder;
 import io.github.sinaraz.audio.DecoderFactory;
 import io.github.sinaraz.internal.processing.PlaybackPipeline;
 
-/**
- * Measures open time, seek latency and decode throughput for the given files.
- *
- * <pre>./gradlew benchmark -PbenchFiles=/tmp/fixtures/long-10min.mp3,/tmp/fixtures/long.wav</pre>
- *
- * Numbers depend on the machine; compare runs on the same machine only.
- */
+
 public final class Benchmark {
 
     private static final int SEEKS = 25;
@@ -42,8 +36,6 @@ public final class Benchmark {
         System.out.printf("duration %.1f s, open %.1f ms (%s)%n", seconds, openMs,
                 decoder.audioInfo().decoderName());
 
-        // Seek latency: random targets across the file, measured after a warm-up pass.
-        // Untimed warm-up so JIT compilation of the seek and decode paths does not land in the measurements.
         Random warm = new Random(7L);
         for (int i = 0; i < 30; i++) {
             decoder.seek(Duration.ofMillis((long) (warm.nextDouble() * seconds * 1000)));
@@ -63,7 +55,6 @@ public final class Benchmark {
                 SEEKS, seekNanos[SEEKS / 2] / 1e6, seekNanos[SEEKS * 9 / 10] / 1e6, seekNanos[SEEKS - 1] / 1e6);
         decoder.close();
 
-        // Decode throughput: whole file, with and without the processing pipeline.
         for (int pass = 0; pass < 2; pass++) {
             boolean withPipeline = pass == 1;
             double best = 0;
@@ -89,7 +80,7 @@ public final class Benchmark {
                 }
             }
             if (sink == -1) {
-                System.out.println(sink); // keeps the work observable to the JIT
+                System.out.println(sink);
             }
         }
         double elapsed = (System.nanoTime() - start) / 1e9;

@@ -3,3 +3,7 @@
 /build/
 /build/classes/java/main/
 /build/classes/java/samples/
+/.idea
+/.vs
+/.vscode
+/settings
