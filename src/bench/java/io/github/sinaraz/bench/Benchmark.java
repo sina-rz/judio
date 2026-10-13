@@ -17,7 +17,7 @@ public final class Benchmark {
     private static final int SEEKS = 25;
     private static final int CHUNK = PlaybackConfig.defaults().chunkBytes();
 
-    public static void main(String[] args) throws Exception {
+    static void main(String[] args) throws Exception {
         if (args.length == 0) {
             System.err.println("usage: Benchmark <audio file> [...]");
             System.exit(2);
