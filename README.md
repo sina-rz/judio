@@ -5,11 +5,20 @@ It is written in pure Java, so it needs no extra software
 installed on your computer.
 
 
-[![Build](https://img.shields.io/github/actions/workflow/status/sinaraz/judio/gradle.yml?branch=main)](https://github.com/sinaraz/judio/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Java](https://img.shields.io/badge/JDK-25-orange.svg)](#requirements)
 
 <img alt="judio&#39;s Swing player while a track plays" src="docs/screenshots/gui1.png" width="800"/>
+
+## Download 
+Judio is available on Maven Central
+
+`groupId` io.github.sina-rz
+
+`artifactId` judio
+
+`version`
+![](https://img.shields.io/maven-metadata/v.svg?metadataUrl=https%3A%2F%2Frepo1.maven.org%2Fmaven2%2Fio%2Fgithub%2Fsina-rz%2Fjudio%2Fmaven-metadata.xml&label=maven-central)
 
 ## Try it
 
