@@ -52,8 +52,11 @@ final class DecodeStage {
     private final int chunkBytes;
     private final Thread thread;
 
+    /** A queued unit of work; {@code generation < 0} means "always run" (close/shutdown). */
+    private record QueuedTask(long generation, Runnable action) {}
+
     // ----- guarded by lock -----
-    private final ArrayDeque<Runnable> tasks = new ArrayDeque<>();
+    private final ArrayDeque<QueuedTask> tasks = new ArrayDeque<>();
     private final ArrayDeque<Piece> pieces = new ArrayDeque<>();
     private final ArrayDeque<byte[]> free = new ArrayDeque<>();
     private final List<Completion> completions = new ArrayList<>();
@@ -137,32 +140,32 @@ final class DecodeStage {
     }
 
     void openLocked(Track track, long gen) {
-        tasks.add(() -> doOpen(track, gen));
+        tasks.add(new QueuedTask(gen, () -> doOpen(track, gen)));
         space.signal();
     }
 
     void seekLocked(Duration target, long gen) {
-        tasks.add(() -> doSeek(target, gen));
+        tasks.add(new QueuedTask(gen, () -> doSeek(target, gen)));
         space.signal();
     }
 
     void rewindLocked(Track track, long gen) {
-        tasks.add(() -> doRewind(track, gen));
+        tasks.add(new QueuedTask(gen, () -> doRewind(track, gen)));
         space.signal();
     }
 
     /** Closes the current decoder, if any. Ordered after requests already queued. */
     void closeLocked() {
-        tasks.add(this::doClose);
+        tasks.add(new QueuedTask(-1L, this::doClose));
         space.signal();
     }
 
     /** Closes the decoder and ends the thread. Ordered after requests already queued. */
     void shutdownLocked() {
-        tasks.add(() -> {
+        tasks.add(new QueuedTask(-1L, () -> {
             doClose();
             exit = true;
-        });
+        }));
         space.signal();
     }
 
@@ -182,17 +185,30 @@ final class DecodeStage {
         try {
             while (!exit) {
                 Runnable task = null;
+                boolean skippedStale = false;
                 lock.lock();
                 try {
                     while (tasks.isEmpty() && !(pumping && pieces.size() < READ_AHEAD_CHUNKS)) {
                         space.await();
                     }
-                    task = tasks.poll();
+                    QueuedTask queued = tasks.poll();
+                    if (queued != null) {
+                        // Work for a superseded generation (for example the full
+                        // file scan of a track the user already skipped away
+                        // from) is dropped instead of blocking the current one.
+                        if (queued.generation() < 0 || queued.generation() == generation) {
+                            task = queued.action();
+                        } else {
+                            skippedStale = true;
+                        }
+                    }
                 } finally {
                     lock.unlock();
                 }
                 if (task != null) {
                     task.run();
+                } else if (skippedStale) {
+                    continue; // poll the next queued task before reading more audio
                 } else {
                     readOne();
                 }
