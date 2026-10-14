@@ -70,9 +70,16 @@ public final class FormatSniffer {
             return Format.MP3;
         }
         // MPEG audio frame sync: 11 set bits, then version and layer bits.
-        if (n >= 2 && (head[0] & 0xFF) == 0xFF && (head[1] & 0xE0) == 0xE0) {
-            int layer = (head[1] >> 1) & 0x03;
-            if (layer == 0x01) { // 01 = Layer III
+        // Layers I, II and III are all decoded (by JLayer), so all are MP3 here;
+        // reserved version/layer and bad bitrate/rate indices are rejected so
+        // random 0xFF 0xFB-prefixed junk is not misclassified.
+        if (n >= 3 && (head[0] & 0xFF) == 0xFF && (head[1] & 0xE0) == 0xE0) {
+            int version = (head[1] >> 3) & 0x03;  // 01 is reserved
+            int layer = (head[1] >> 1) & 0x03;    // 00 is reserved
+            int bitrateIndex = (head[2] >> 4) & 0x0F;
+            int rateIndex = (head[2] >> 2) & 0x03;
+            if (version != 0x01 && layer != 0x00
+                    && bitrateIndex != 0x00 && bitrateIndex != 0x0F && rateIndex != 0x03) {
                 return Format.MP3;
             }
         }

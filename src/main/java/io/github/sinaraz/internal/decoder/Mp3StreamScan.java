@@ -22,16 +22,22 @@ record Mp3StreamScan(
         int samplesPerFrame,
         long xingFrames) {
 
+    private static final int[] BITRATE_MPEG1_L1 = {
+        0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 0};
+    private static final int[] BITRATE_MPEG1_L2 = {
+        0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0};
     private static final int[] BITRATE_MPEG1_L3 = {
         0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0};
-    private static final int[] BITRATE_MPEG2_L3 = {
+    private static final int[] BITRATE_MPEG2_L1 = {
+        0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256, 0};
+    private static final int[] BITRATE_MPEG2_L23 = {
         0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0};
     private static final int[] RATE_MPEG1 = {44100, 48000, 32000};
     private static final int[] RATE_MPEG2 = {22050, 24000, 16000};
     private static final int[] RATE_MPEG25 = {11025, 12000, 8000};
 
     /**
-     * Finds the first valid Layer III frame in {@code data}.
+     * Finds the first valid MPEG audio frame (Layer I, II or III) in {@code data}.
      *
      * @param data     the bytes that follow any ID3 tag, starting at the tag's end
      * @param tagBytes the number of bytes of ID3 tag that came before {@code data}
@@ -47,16 +53,19 @@ record Mp3StreamScan(
                 continue;
             }
             int version = (b1 >> 3) & 3;   // 3 = MPEG-1, 2 = MPEG-2, 0 = MPEG-2.5, 1 = reserved
-            int layer = (b1 >> 1) & 3;     // 1 = Layer III
+            int layer = (b1 >> 1) & 3;     // 3 = Layer I, 2 = Layer II, 1 = Layer III, 0 = reserved
             int bitrateIndex = (b2 >> 4) & 15;
             int rateIndex = (b2 >> 2) & 3;
-            if (version == 1 || layer != 1 || bitrateIndex == 0 || bitrateIndex == 15 || rateIndex == 3) {
+            if (version == 1 || layer == 0 || bitrateIndex == 0 || bitrateIndex == 15 || rateIndex == 3) {
                 continue;
             }
             boolean mpeg1 = version == 3;
-            int bitrate = (mpeg1 ? BITRATE_MPEG1_L3 : BITRATE_MPEG2_L3)[bitrateIndex] * 1000;
+            int[] table = mpeg1
+                    ? (layer == 3 ? BITRATE_MPEG1_L1 : layer == 2 ? BITRATE_MPEG1_L2 : BITRATE_MPEG1_L3)
+                    : (layer == 3 ? BITRATE_MPEG2_L1 : BITRATE_MPEG2_L23);
+            int bitrate = table[bitrateIndex] * 1000;
             int sampleRate = (mpeg1 ? RATE_MPEG1 : version == 2 ? RATE_MPEG2 : RATE_MPEG25)[rateIndex];
-            int samplesPerFrame = mpeg1 ? 1152 : 576;
+            int samplesPerFrame = layer == 3 ? 384 : layer == 2 ? 1152 : (mpeg1 ? 1152 : 576);
             boolean mono = ((b3 >> 6) & 3) == 3;
             boolean crc = (b1 & 1) == 0;
             int sideInfo = mpeg1 ? (mono ? 17 : 32) : (mono ? 9 : 17);
@@ -66,7 +75,8 @@ record Mp3StreamScan(
                     sampleRate,
                     bitrate,
                     samplesPerFrame,
-                    readXingFrames(data, xing));
+                    // Xing/Info headers only exist in Layer III frames.
+                    layer == 1 ? readXingFrames(data, xing) : -1L);
         }
         return null;
     }
