@@ -1,9 +1,9 @@
-# Project exclude paths
 /.gradle/
 /build/
-/build/classes/java/main/
-/build/classes/java/samples/
-/.idea
-/.vs
-/.vscode
-/settings
+/.idea/
+/.vs/
+/.vscode/
+.DS_Store
+*.log
+*.local
+/gradle.properties.local
