@@ -46,11 +46,34 @@ class Mp3StreamScanTest {
     }
 
     @Test
-    void rejectsDataWithoutLayerThreeHeader() {
+    void acceptsLayerTwoHeader() {
         byte[] data = new byte[16];
         data[0] = (byte) 0xFF;
-        data[1] = (byte) 0xF5;   // layer bits 10 = Layer II, not Layer III
+        data[1] = (byte) 0xF5;   // MPEG-2, layer bits 10 = Layer II
+        data[2] = (byte) 0x90;   // bitrate index 9, sample-rate index 0
+        Mp3StreamScan scan = Mp3StreamScan.find(data, 0L);
+        assertEquals(22_050, scan.sampleRate());
+        assertEquals(80_000, scan.bitrate());
+        assertEquals(1152, scan.samplesPerFrame());
+        assertEquals(-1L, scan.xingFrames(), "Xing headers only exist in Layer III");
+    }
+
+    @Test
+    void rejectsReservedLayerHeader() {
+        byte[] data = new byte[16];
+        data[0] = (byte) 0xFF;
+        data[1] = (byte) 0xF9;   // layer bits 00 = reserved
         data[2] = (byte) 0x90;
         assertNull(Mp3StreamScan.find(data, 0L));
+    }
+
+    @Test
+    void seekFractionIsExactForShortStreams() {
+        assertEquals(0.0, StreamingMp3Decoder.seekFraction(0, 1000), 1e-9);
+        assertEquals(0.5, StreamingMp3Decoder.seekFraction(500, 1000), 1e-9);
+        assertEquals(1.0, StreamingMp3Decoder.seekFraction(2000, 1000), 1e-9);
+        assertEquals(0.0, StreamingMp3Decoder.seekFraction(10, 0), 1e-9);
+        // The regression this guards: a sub-second stream used to divide by zero.
+        assertEquals(0.25, StreamingMp3Decoder.seekFraction(11025, 44100), 1e-9);
     }
 }

@@ -29,7 +29,8 @@ class DecoderFactoryTest {
                 FormatSniffer.detect(".snd\0\0\0\u0018".getBytes(StandardCharsets.ISO_8859_1), 8));
         assertEquals(FormatSniffer.Format.MP3,
                 FormatSniffer.detect("ID3\u0004\0".getBytes(StandardCharsets.ISO_8859_1), 5));
-        assertEquals(FormatSniffer.Format.MP3, FormatSniffer.detect(new byte[] {(byte) 0xFF, (byte) 0xFB}, 2));
+        assertEquals(FormatSniffer.Format.MP3, FormatSniffer.detect(
+                new byte[] {(byte) 0xFF, (byte) 0xFB, (byte) 0x90, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 16));
         assertEquals(FormatSniffer.Format.FLAC, FormatSniffer.detect("fLaC".getBytes(StandardCharsets.ISO_8859_1), 4));
         assertEquals(FormatSniffer.Format.OGG, FormatSniffer.detect("OggS".getBytes(StandardCharsets.ISO_8859_1), 4));
         assertEquals(FormatSniffer.Format.UNKNOWN, FormatSniffer.detect(new byte[] {1, 2, 3, 4}, 4));

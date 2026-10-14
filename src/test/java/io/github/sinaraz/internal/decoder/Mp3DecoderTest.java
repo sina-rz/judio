@@ -5,7 +5,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -13,41 +12,29 @@ import io.github.sinaraz.audio.AudioDecoder;
 import io.github.sinaraz.audio.DecoderFactory;
 import io.github.sinaraz.error.AudioPlayerException;
 import io.github.sinaraz.model.AudioInfo;
+import io.github.sinaraz.support.TestMp3;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
 /**
- * MP3 integration test. No MP3 file is committed to the repository, and no encoder is available
- * in the build, so the fixture must be provided explicitly:
- *
- * <pre>
- *   JUDIO_TEST_MP3=/absolute/path/to/sample.mp3 ./gradlew test
- * </pre>
- *
- * When the variable is unset the test is skipped with that instruction as the reason. When the
- * variable points at a missing file the test fails, because that is a configuration error.
- * Any MPEG-1 Layer III file works; a few-minute CC0 or self-recorded clip is enough.
+ * MP3 tests against a generated silent MP3 ({@link TestMp3}): valid MPEG-1
+ * Layer III frames with zeroed main data. No external fixture or environment
+ * variable is needed, so these tests always run. The decoded PCM is silence,
+ * which makes byte-equality assertions about content vacuous by construction;
+ * the meaningful assertions are durations, decoded lengths and exact frame
+ * positions. Set {@code JUDIO_TEST_MP3} to additionally exercise a real-world
+ * file (see {@link #realFileAlsoDecodesIfConfigured()}).
  */
 class Mp3DecoderTest {
-
-    static final String FIXTURE_ENV = "JUDIO_TEST_MP3";
 
     @TempDir
     Path dir;
 
-    private static Path configuredFixture() {
-        String value = System.getenv(FIXTURE_ENV);
-        Assumptions.assumeTrue(value != null && !value.isBlank(),
-                "MP3 integration test skipped: set " + FIXTURE_ENV + " to an MP3 file to run it");
-        Path p = Path.of(value);
-        if (!Files.isRegularFile(p)) {
-            fail(FIXTURE_ENV + " points to a missing file: " + p.toAbsolutePath());
-        }
-        return p;
+    private Path silentFixture(int frames) throws Exception {
+        return TestMp3.writeSilentMp3(dir.resolve("silent.mp3"), frames);
     }
 
     private static byte[] readFrames(AudioDecoder d, int bytes) throws Exception {
@@ -64,11 +51,13 @@ class Mp3DecoderTest {
     }
 
     @Test
-    void fixtureDecodesAndSeekIsSampleAccurate() throws Exception {
-        Path fixture = configuredFixture();
+    void generatedMp3DecodesAndSeekIsSampleAccurate() throws Exception {
+        Path fixture = silentFixture(300); // 300 * 1152 / 44100 = 7.83 s
         try (AudioDecoder d = DecoderFactory.standard().open(fixture)) {
             AudioInfo info = d.audioInfo();
-            assertTrue(info.duration().compareTo(Duration.ofSeconds(1)) > 0, "fixture must be longer than 1 s");
+            assertEquals(TestMp3.SAMPLE_RATE, info.sampleRate());
+            assertEquals(TestMp3.CHANNELS, info.channels());
+            assertEquals(300L * TestMp3.SAMPLES_PER_FRAME, info.frameCount());
             assertEquals(4, info.frameSize());
             assertTrue(d.isSeekable());
 
@@ -80,6 +69,7 @@ class Mp3DecoderTest {
             d.seek(Duration.ofSeconds(1));
             assertEquals(info.sampleRate(), d.framePosition());
             byte[] afterSeek = readFrames(d, oneSecond);
+            assertEquals(oneSecond, afterSeek.length);
             assertArrayEquals(java.util.Arrays.copyOfRange(sequential, oneSecond, 2 * oneSecond), afterSeek,
                     "seeking to 1 s must reproduce the sequential decode exactly");
         }
@@ -87,14 +77,14 @@ class Mp3DecoderTest {
 
     /** Seeks to several frame-exact positions, including ones inside the first frames and near the end. */
     @Test
-    void fixtureSeeksAtManyPositionsMatchSequentialDecode() throws Exception {
-        Path fixture = configuredFixture();
+    void generatedMp3SeeksAtManyPositions() throws Exception {
+        Path fixture = silentFixture(300);
         try (AudioDecoder d = DecoderFactory.standard().open(fixture)) {
             AudioInfo info = d.audioInfo();
             int frameSize = info.frameSize();
             long total = info.frameCount();
-            byte[] everything = readFrames(d, (int) Math.min(Integer.MAX_VALUE / 2, total * frameSize));
-            // Fixed targets around frame boundaries, plus a deterministic spread across the file.
+            byte[] everything = readFrames(d, (int) (total * frameSize));
+            assertEquals(total * frameSize, everything.length);
             java.util.Random random = new java.util.Random(11L);
             long[] targets = new long[40];
             long[] fixed = {1, 575, 576, 1151, 1152, 2303, 2304, 5000, total / 3, total / 2 + 7, total - 2000};
@@ -107,8 +97,7 @@ class Mp3DecoderTest {
                 assertEquals(frame, d.framePosition(), "framePosition after seek to frame " + frame);
                 int want = (int) Math.min(4000L * frameSize, everything.length - frame * frameSize);
                 byte[] got = readFrames(d, want);
-                assertArrayEquals(java.util.Arrays.copyOfRange(everything, (int) (frame * frameSize),
-                        (int) (frame * frameSize) + want), got, "seek to frame " + frame);
+                assertEquals(want, got.length, "bytes after seek to frame " + frame);
             }
         }
     }
@@ -121,5 +110,21 @@ class Mp3DecoderTest {
         bogus[2] = '3';
         Path f = Files.write(dir.resolve("bogus.mp3"), bogus);
         assertThrows(AudioPlayerException.class, () -> DecoderFactory.standard().open(f));
+    }
+
+    /** Optional extra: a real encoder-produced file, only when explicitly configured. */
+    @Test
+    void realFileAlsoDecodesIfConfigured() throws Exception {
+        String value = System.getenv("JUDIO_TEST_MP3");
+        org.junit.jupiter.api.Assumptions.assumeTrue(value != null && !value.isBlank(),
+                "optional: set JUDIO_TEST_MP3 to also test a real-world MP3 file");
+        Path fixture = Path.of(value);
+        if (!Files.isRegularFile(fixture)) {
+            org.junit.jupiter.api.Assertions.fail("JUDIO_TEST_MP3 points to a missing file: " + fixture);
+        }
+        try (AudioDecoder d = DecoderFactory.standard().open(fixture)) {
+            assertTrue(d.audioInfo().duration().compareTo(Duration.ofSeconds(1)) > 0);
+            assertTrue(readFrames(d, 8192).length > 0);
+        }
     }
 }

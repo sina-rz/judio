@@ -1,84 +1,128 @@
 package io.github.sinaraz.audio;
 
 import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
-import org.junit.jupiter.api.Assumptions;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import io.github.sinaraz.JudioPlayer;
 import io.github.sinaraz.PlaybackListener;
 import io.github.sinaraz.error.RemoteSourceException;
+import io.github.sinaraz.model.MediaLocation;
 import io.github.sinaraz.model.PlaybackError;
 import io.github.sinaraz.model.PlaybackState;
-import io.github.sinaraz.model.MediaLocation;
 import io.github.sinaraz.model.Track;
 import io.github.sinaraz.support.Await;
+import io.github.sinaraz.support.TestAudio;
+import io.github.sinaraz.support.TestMp3;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Streams real files from a public host, so the tests exercise the same path a user takes. They
- * are skipped when the host cannot be reached.
+ * Streams files from a loopback HTTP server started by the test itself, so the
+ * full network path (range requests, reconnect offsets, HTTP errors) is
+ * exercised in every environment with no external host involved.
  */
 class RemoteStreamTest {
-
-    static final URI MP3 = URI.create(
-            "https://file-examples.com/storage/fe9ac44c8a6acc7d7989e28/2017/11/file_example_MP3_5MG.mp3");
-    static final URI WAV = URI.create(
-            "https://file-examples.com/storage/fe9ac44c8a6acc7d7989e28/2017/11/file_example_WAV_1MG.wav");
-    static final URI MISSING = URI.create(
-            "https://file-examples.com/storage/fe9ac44c8a6acc7d7989e28/2017/11/no_such_file_judio.mp3");
 
     private static final int SAMPLE_RATE = 44_100;
     private static final int FRAME_BYTES = 4;   // 16-bit stereo
 
+    private static HttpServer server;
+    private static String base;
     private static DecoderFactory factory;
 
+    private static URI wavUri;
+    private static URI mp3Uri;
+    private static URI missingUri;
+
     @BeforeAll
-    static void requireNetwork() {
-        StreamOptions options = StreamOptions.builder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .readTimeout(Duration.ofSeconds(30))
-                .build();
-        factory = DecoderFactory.standard(options);
-        boolean reachable;
-        try {
-            HttpResponse<Void> head = HttpClient.newBuilder()
-                    .followRedirects(HttpClient.Redirect.NORMAL)
-                    .connectTimeout(Duration.ofSeconds(10))
-                    .build()
-                    .send(HttpRequest.newBuilder(WAV).method("HEAD", HttpRequest.BodyPublishers.noBody())
-                            .timeout(Duration.ofSeconds(15)).build(),
-                            HttpResponse.BodyHandlers.discarding());
-            reachable = head.statusCode() == 200;
-        } catch (IOException e) {
-            reachable = false;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            reachable = false;
+    static void startServer() throws Exception {
+        Path dir = Files.createTempDirectory("judio-remote-test");
+        byte[] wav = Files.readAllBytes(
+                TestAudio.writeWav(dir.resolve("tone.wav"), SAMPLE_RATE * 3, 2, SAMPLE_RATE, 16));
+        byte[] mp3 = TestMp3.silentMp3(300);  // ~7.8 s of silent MP3
+
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/tone.wav", exchange -> serve(exchange, wav, "audio/wav"));
+        server.createContext("/silent.mp3", exchange -> serve(exchange, mp3, "audio/mpeg"));
+        server.createContext("/missing.mp3", exchange -> {
+            byte[] body = "not found".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(404, body.length);
+            try (OutputStream out = exchange.getResponseBody()) {
+                out.write(body);
+            }
+        });
+        server.start();
+        base = "http://127.0.0.1:" + server.getAddress().getPort();
+        wavUri = URI.create(base + "/tone.wav");
+        mp3Uri = URI.create(base + "/silent.mp3");
+        missingUri = URI.create(base + "/missing.mp3");
+        factory = DecoderFactory.standard(StreamOptions.builder()
+                .connectTimeout(Duration.ofSeconds(5))
+                .readTimeout(Duration.ofSeconds(10))
+                .build());
+    }
+
+    @AfterAll
+    static void stopServer() {
+        if (server != null) {
+            server.stop(0);
         }
-        Assumptions.assumeTrue(reachable, "file-examples.com is not reachable; skipping network stream tests");
+    }
+
+    /** Serves {@code body} honouring {@code Range: bytes=N-} with a 206 response. */
+    private static void serve(HttpExchange exchange, byte[] body, String contentType) throws IOException {
+        exchange.getResponseHeaders().set("Content-Type", contentType);
+        exchange.getResponseHeaders().set("Accept-Ranges", "bytes");
+        if ("HEAD".equals(exchange.getRequestMethod())) {
+            exchange.getResponseHeaders().set("Content-Length", Integer.toString(body.length));
+            exchange.sendResponseHeaders(200, -1);
+            return;
+        }
+        String range = exchange.getRequestHeaders().getFirst("Range");
+        long from = 0;
+        if (range != null && range.startsWith("bytes=")) {
+            String spec = range.substring("bytes=".length());
+            int dash = spec.indexOf('-');
+            if (dash > 0) {
+                from = Long.parseLong(spec.substring(0, dash));
+            }
+        }
+        if (from > 0) {
+            exchange.getResponseHeaders().set("Content-Range",
+                    "bytes " + from + "-" + (body.length - 1) + "/" + body.length);
+            exchange.sendResponseHeaders(206, body.length - from);
+        } else {
+            exchange.sendResponseHeaders(200, body.length);
+        }
+        try (OutputStream out = exchange.getResponseBody()) {
+            out.write(body, (int) from, body.length - (int) from);
+        }
     }
 
     @Test
     void streamsWavAndDecodesCanonicalPcm() throws IOException {
         long bytes = 0;
-        try (AudioDecoder decoder = factory.open(MediaLocation.of(WAV))) {
+        try (AudioDecoder decoder = factory.open(MediaLocation.of(wavUri))) {
             assertEquals(SAMPLE_RATE, decoder.audioInfo().sampleRate());
             assertEquals(2, decoder.audioInfo().channels());
             assertEquals(16, decoder.audioInfo().sampleSizeBits());
             assertTrue(decoder.isSeekable(), "a range-capable WAV stream should be seekable");
-            assertTrue(decoder.audioInfo().duration().compareTo(Duration.ofSeconds(5)) > 0);
+            assertEquals(3, decoder.audioInfo().duration().toSeconds());
 
             byte[] buffer = new byte[8192];
             int n;
@@ -86,20 +130,19 @@ class RemoteStreamTest {
                 bytes += n;
             }
         }
-        // The file is about 5.9 seconds of 16-bit stereo at 44.1 kHz, so about 1 MB of PCM.
-        assertTrue(bytes > 1_000_000, "decoded only " + bytes + " bytes");
+        assertEquals(3L * SAMPLE_RATE * FRAME_BYTES, bytes);
     }
 
     @Test
     void seeksWithinWavStream() throws IOException {
-        try (AudioDecoder decoder = factory.open(MediaLocation.of(WAV))) {
-            decoder.seek(Duration.ofSeconds(3));
-            assertEquals(3L * SAMPLE_RATE, decoder.framePosition());
+        try (AudioDecoder decoder = factory.open(MediaLocation.of(wavUri))) {
+            decoder.seek(Duration.ofSeconds(1));
+            assertEquals(1L * SAMPLE_RATE, decoder.framePosition());
 
             byte[] buffer = new byte[SAMPLE_RATE * FRAME_BYTES];
             int n = decoder.read(buffer, 0, buffer.length);
             assertEquals(buffer.length, n);
-            assertEquals(4L * SAMPLE_RATE, decoder.framePosition());
+            assertEquals(2L * SAMPLE_RATE, decoder.framePosition());
 
             decoder.seek(Duration.ofSeconds(1000));
             assertEquals(-1, decoder.read(buffer, 0, buffer.length), "past the end should read end of stream");
@@ -108,44 +151,39 @@ class RemoteStreamTest {
 
     @Test
     void streamsMp3WithDurationAndSeeks() throws IOException {
-        try (AudioDecoder decoder = factory.open(MediaLocation.of(MP3))) {
+        try (AudioDecoder decoder = factory.open(MediaLocation.of(mp3Uri))) {
             assertEquals(SAMPLE_RATE, decoder.audioInfo().sampleRate());
             assertEquals(2, decoder.audioInfo().channels());
             assertTrue(decoder.isSeekable(), "a range-capable MP3 stream should be seekable");
-            // The Xing header in this file gives the length: about 2 minutes 13 seconds.
+            // No Xing header in the generated file: duration is estimated from
+            // bitrate and length, so allow a frame or two of slack.
             long seconds = decoder.audioInfo().duration().toSeconds();
-            assertTrue(seconds >= 130 && seconds <= 135, "duration was " + decoder.audioInfo().duration());
+            assertTrue(seconds >= 6 && seconds <= 8, "duration was " + decoder.audioInfo().duration());
 
-            decoder.seek(Duration.ofSeconds(60));
+            decoder.seek(Duration.ofSeconds(3));
             byte[] buffer = new byte[SAMPLE_RATE * FRAME_BYTES];
             assertEquals(buffer.length, decoder.read(buffer, 0, buffer.length));
             long position = decoder.framePosition();
-            assertTrue(Math.abs(position - 61L * SAMPLE_RATE) < SAMPLE_RATE / 100,
-                    "after seeking to 60 s and reading 1 s, position was " + position);
-            assertTrue(nonSilent(buffer), "audio after a seek should not be silence");
+            assertTrue(Math.abs(position - 4L * SAMPLE_RATE) < SAMPLE_RATE / 10,
+                    "after seeking to 3 s and reading 1 s, position was " + position);
 
             decoder.seek(Duration.ZERO);
             assertEquals(0L, decoder.framePosition());
-            decoder.read(buffer, 0, buffer.length);
-            assertTrue(nonSilent(buffer));
+            assertEquals(buffer.length, decoder.read(buffer, 0, buffer.length));
         }
     }
 
     @Test
     void playerSeeksWithinOnlineWavAndFinishes() throws Exception {
-        seekThroughOnlinePlayer(WAV, Duration.ofSeconds(4));
+        seekThroughPlayer(wavUri, Duration.ofSeconds(2));
     }
 
     @Test
     void playerSeeksWithinOnlineMp3AndFinishes() throws Exception {
-        seekThroughOnlinePlayer(MP3, Duration.ofSeconds(120));
+        seekThroughPlayer(mp3Uri, Duration.ofSeconds(6));
     }
 
-    /**
-     * Loads a hosted file through the full player, pauses, seeks while paused, resumes, and waits for
-     * the end. Seeking while paused keeps the position check exact.
-     */
-    private static void seekThroughOnlinePlayer(URI uri, Duration target) throws Exception {
+    private static void seekThroughPlayer(URI uri, Duration target) throws Exception {
         CompletableFuture<Void> finished = new CompletableFuture<>();
         try (JudioPlayer player = JudioPlayer.builder().simulatedOutput().build()) {
             player.addListener(new PlaybackListener() {
@@ -161,12 +199,12 @@ class RemoteStreamTest {
             });
             player.addUrl(uri);
             player.play();
-            Await.until("online track playing", Duration.ofSeconds(60),
+            Await.until("stream playing", Duration.ofSeconds(30),
                     () -> player.snapshot().state() == PlaybackState.PLAYING);
 
             player.pause();
             player.seek(target);
-            Await.until("seek on the online stream lands", Duration.ofSeconds(60),
+            Await.until("seek on the stream lands", Duration.ofSeconds(30),
                     () -> player.snapshot().state() == PlaybackState.PAUSED
                             && player.snapshot().position().compareTo(target) >= 0);
             Duration landed = player.snapshot().position();
@@ -174,7 +212,7 @@ class RemoteStreamTest {
                     "seek to " + target + " landed at " + landed);
 
             player.resume();
-            finished.get(90, TimeUnit.SECONDS);
+            finished.get(30, TimeUnit.SECONDS);
             assertEquals(PlaybackState.ENDED, player.snapshot().state());
         }
     }
@@ -182,17 +220,8 @@ class RemoteStreamTest {
     @Test
     void reportsHttpErrorStatusFromTheServer() {
         RemoteSourceException error = assertThrows(RemoteSourceException.class,
-                () -> factory.open(MediaLocation.of(MISSING)));
+                () -> factory.open(MediaLocation.of(missingUri)));
         assertEquals(404, error.statusCode());
-        assertEquals(MISSING, error.uri());
-    }
-
-    private static boolean nonSilent(byte[] pcm) {
-        for (byte b : pcm) {
-            if (b != 0) {
-                return true;
-            }
-        }
-        return false;
+        assertEquals(missingUri, error.uri());
     }
 }

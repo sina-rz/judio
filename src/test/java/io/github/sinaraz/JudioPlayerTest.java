@@ -16,6 +16,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 import io.github.sinaraz.audio.DecoderFactory;
 import io.github.sinaraz.audio.SimulatedAudioOutput;
+import io.github.sinaraz.error.PlaybackStateException;
+import io.github.sinaraz.error.QueueException;
 import io.github.sinaraz.model.ErrorKind;
 import io.github.sinaraz.model.PlaybackError;
 import io.github.sinaraz.model.PlaybackSnapshot;
@@ -152,6 +154,50 @@ class JudioPlayerTest {
         player.addFiles(List.of(wav("m1.wav", 0.1), wav("m2.wav", 0.1)));
         Await.until("metadata resolved", WAIT,
                 () -> player.queue().stream().allMatch(t -> t.metadataStatus() != TrackMetadataStatus.PENDING));
+    }
+
+    @Test
+    void mutationsAfterCloseThrowPlaybackStateException() throws Exception {
+        newPlayer(PlaybackConfig.defaults());
+        Path file = wav("closed.wav", 0.2);
+        player.addFiles(List.of(file));
+        player.close();
+
+        org.junit.jupiter.api.Assertions.assertThrows(PlaybackStateException.class,
+                () -> player.addFiles(List.of(file)));
+        org.junit.jupiter.api.Assertions.assertThrows(PlaybackStateException.class,
+                () -> player.addUrl(java.net.URI.create("https://example.com/x.mp3")));
+        org.junit.jupiter.api.Assertions.assertThrows(PlaybackStateException.class,
+                () -> player.setRepeat(RepeatMode.ALL));
+        org.junit.jupiter.api.Assertions.assertThrows(PlaybackStateException.class,
+                () -> player.setShuffle(true));
+        org.junit.jupiter.api.Assertions.assertThrows(PlaybackStateException.class,
+                () -> player.remove(0));
+        org.junit.jupiter.api.Assertions.assertThrows(PlaybackStateException.class,
+                player::clear);
+        // Reading state remains legal after close.
+        assertEquals(PlaybackState.CLOSED, snap().state());
+        assertEquals(1, player.queue().size());
+    }
+
+    @Test
+    void addFilesRejectsNullAndEmptyWithoutSideEffects() throws Exception {
+        newPlayer(PlaybackConfig.defaults());
+        Path file = wav("ok.wav", 0.1);
+        org.junit.jupiter.api.Assertions.assertThrows(QueueException.class,
+                () -> player.addFiles(java.util.Arrays.asList(file, null)));
+        assertEquals(0, player.queue().size());
+        assertTrue(player.addFiles(List.of()).isEmpty());
+        assertEquals(0, player.queue().size());
+    }
+
+    @Test
+    void insertFilePlacesEntryAtIndex() throws Exception {
+        newPlayer(PlaybackConfig.defaults());
+        player.addFiles(List.of(wav("a.wav", 0.1), wav("c.wav", 0.1)));
+        player.insertFile(1, wav("b.wav", 0.1));
+        assertEquals(3, player.queue().size());
+        assertEquals("b", player.queue().get(1).title());
     }
 
     @Test
