@@ -10,7 +10,9 @@ ten minutes.
 
 You need:
 
-- **JDK 25.** Check with `java -version`. Gradle can download one for you if you allow it.
+- **JDK 25.** Check with `java -version`. If no JDK 25 is installed, Gradle downloads one for
+  the build automatically on first use (this needs network access once; delete the toolchain
+  cache under `~/.gradle/jdks` to reclaim the disk space).
 - **An audio file.** Use an MP3, WAV, AIFF, or AU file. Step 3 needs a file longer than 8
   seconds.
 - **The judio project.** The programs live in `src/samples/java/io/github/sinaraz/samples/tutorial/`.
