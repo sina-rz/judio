@@ -226,7 +226,6 @@ public final class PcmFileDecoder implements AudioDecoder {
 
     /** Writes one clamped 16-bit little-endian sample. */
     private static void putPcm16(byte[] dst, int o, long value) {
-//        int v = (int) Math.max(-32768L, Math.min(32767L, value));
         int v = (int) Math.clamp(value, -32768L, 32767L);
         dst[o] = (byte) v;
         dst[o + 1] = (byte) (v >> 8);
@@ -234,9 +233,22 @@ public final class PcmFileDecoder implements AudioDecoder {
 
     // ---------- container parsing ----------
 
+    /** Positional read that loops until the buffer is full or EOF (FileChannel may short-read). */
+    private static int readFullyAt(FileChannel ch, ByteBuffer buf, long position) throws IOException {
+        int total = 0;
+        while (buf.hasRemaining()) {
+            int n = ch.read(buf, position + total);
+            if (n < 0) {
+                break;
+            }
+            total += n;
+        }
+        return total;
+    }
+
     private static Header parse(FileChannel ch, Path file, long fileSize) throws IOException {
         ByteBuffer head = ByteBuffer.allocate(12);
-        if (ch.read(head, 0) < 12) {
+        if (readFullyAt(ch, head, 0) < 12) {
             throw new UnsupportedAudioFormatException("open", "file too short for a PCM header", file, null);
         }
         head.flip();
@@ -266,7 +278,7 @@ public final class PcmFileDecoder implements AudioDecoder {
         ByteBuffer chunk = ByteBuffer.allocate(8);
         while (pos + 8 <= fileSize) {
             chunk.clear();
-            ch.read(chunk, pos);
+            readFullyAt(ch, chunk, pos);
             chunk.flip();
             int id = chunk.getInt(0);
             long size = Integer.toUnsignedLong(Integer.reverseBytes(chunk.getInt(4)));
@@ -277,7 +289,7 @@ public final class PcmFileDecoder implements AudioDecoder {
                 }
                 ByteBuffer fmt = ByteBuffer.allocate(40).order(ByteOrder.LITTLE_ENDIAN);
                 fmt.limit((int) Math.min(size, 40));
-                ch.read(fmt, body);
+                readFullyAt(ch, fmt, body);
                 fmt.flip();
                 format = Short.toUnsignedInt(fmt.getShort(0));
                 channelsValue = Short.toUnsignedInt(fmt.getShort(2));
@@ -329,14 +341,14 @@ public final class PcmFileDecoder implements AudioDecoder {
         ByteBuffer chunk = ByteBuffer.allocate(8);
         while (pos + 8 <= fileSize) {
             chunk.clear();
-            ch.read(chunk, pos);
+            readFullyAt(ch, chunk, pos);
             chunk.flip();
             int id = chunk.getInt(0);
             long size = Integer.toUnsignedLong(chunk.getInt(4));
             long body = pos + 8;
             if (id == 0x434F4D4D) {                                               // "COMM"
                 ByteBuffer comm = ByteBuffer.allocate((int) Math.min(size, 26));
-                ch.read(comm, body);
+                readFullyAt(ch, comm, body);
                 comm.flip();
                 if (comm.limit() < 18) {
                     throw new UnsupportedAudioFormatException("open", "short AIFF COMM chunk", file, null);
@@ -365,7 +377,7 @@ public final class PcmFileDecoder implements AudioDecoder {
                     throw new UnsupportedAudioFormatException("open", "AIFF SSND chunk before COMM", file, null);
                 }
                 ByteBuffer ssnd = ByteBuffer.allocate(8);
-                ch.read(ssnd, body);
+                readFullyAt(ch, ssnd, body);
                 ssnd.flip();
                 long offset = Integer.toUnsignedLong(ssnd.getInt(0));
                 long dataStart = body + 8 + offset;
@@ -392,7 +404,7 @@ public final class PcmFileDecoder implements AudioDecoder {
 
     private static Header parseAu(FileChannel ch, Path file, long fileSize) throws IOException {
         ByteBuffer h = ByteBuffer.allocate(24);
-        if (ch.read(h, 0) < 24) {
+        if (readFullyAt(ch, h, 0) < 24) {
             throw new UnsupportedAudioFormatException("open", "short AU header", file, null);
         }
         h.flip();
