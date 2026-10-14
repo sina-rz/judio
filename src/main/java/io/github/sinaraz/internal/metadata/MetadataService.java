@@ -7,6 +7,7 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -32,6 +33,13 @@ public final class MetadataService implements AutoCloseable {
 
     private final ExecutorService executor;
 
+    // Single-entry cover-art cache keyed by (path, size, last-modified): the GUI
+    // asks for the current track's cover on every load, and re-parsing a multi-MB
+    // tag each time is pure waste. One entry bounds memory to one image.
+    private record CoverKey(Path path, long size, long lastModified) {}
+    private CoverKey lastCoverKey;
+    private Optional<CoverArt> lastCover;   // guarded by this
+
     public MetadataService() {
         AtomicInteger counter = new AtomicInteger();
         this.executor = Executors.newFixedThreadPool(2, runnable -> {
@@ -43,22 +51,44 @@ public final class MetadataService implements AutoCloseable {
 
     public CompletableFuture<Result> loadAsync(Track track) {
         Objects.requireNonNull(track, "track");
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                if (!(track.location() instanceof MediaLocation.LocalFile(Path path))) {
-                    return new Result(track.id(), null, null);
+        try {
+            return CompletableFuture.supplyAsync(() -> {
+                try {
+                    if (!(track.location() instanceof MediaLocation.LocalFile(Path path))) {
+                        return new Result(track.id(), null, null);
+                    }
+                    return new Result(track.id(), Id3Reader.read(path).metadata(), null);
+                } catch (IOException | RuntimeException e) {
+                    String reason = e.getMessage() != null ? e.getMessage() : e.toString();
+                    return new Result(track.id(), null, "metadata unavailable: " + reason);
                 }
-                return new Result(track.id(), Id3Reader.read(path).metadata(), null);
-            } catch (IOException | RuntimeException e) {
-                String reason = e.getMessage() != null ? e.getMessage() : e.toString();
-                return new Result(track.id(), null, "metadata unavailable: " + reason);
-            }
-        }, executor);
+            }, executor);
+        } catch (RejectedExecutionException closedPool) {
+            // Closing raced with a submission: report a failed read, never leak
+            // the executor's internal exception type through the public API.
+            return CompletableFuture.completedFuture(
+                    new Result(track.id(), null, "metadata unavailable: player is closed"));
+        }
     }
 
-    /** Synchronously reads the embedded cover image, if any. */
-    public Optional<CoverArt> loadCoverArt(Path file) throws IOException {
-        return Id3Reader.readCoverArt(file);
+    /** Synchronously reads the embedded cover image, if any (cached per unchanged file). */
+    public synchronized Optional<CoverArt> loadCoverArt(Path file) throws IOException {
+        CoverKey key = null;
+        try {
+            key = new CoverKey(file, java.nio.file.Files.size(file),
+                    java.nio.file.Files.getLastModifiedTime(file).toMillis());
+        } catch (IOException ignored) {
+            // Fall through and let the read below produce the real error.
+        }
+        if (key != null && key.equals(lastCoverKey)) {
+            return lastCover;
+        }
+        Optional<CoverArt> art = Id3Reader.readCoverArt(file);
+        if (key != null) {
+            lastCoverKey = key;
+            lastCover = art;
+        }
+        return art;
     }
 
     @Override
