@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "io.github.sina-rz"
-version = "0.1.6"
+version = "0.1.7"
 
 java {
     toolchain {
@@ -18,8 +18,33 @@ java {
     withJavadocJar()
 }
 
+
+fun splitArgs(raw: String): List<String> {
+    val out = mutableListOf<String>()
+    val cur = StringBuilder()
+    var quote: Char? = null
+    var escaped = false
+    for (c in raw) {
+        when {
+            escaped -> { cur.append(c); escaped = false }
+            c == '\\' && quote != '\'' -> escaped = true
+            quote != null && c == quote -> quote = null
+            quote == null && (c == '"' || c == '\'') -> quote = c
+            quote == null && c.isWhitespace() -> { if (cur.isNotEmpty()) { out.add(cur.toString()); cur.clear() } }
+            else -> cur.append(c)
+        }
+    }
+    require(quote == null) { "unterminated quote in arguments: $raw" }
+    if (cur.isNotEmpty()) out.add(cur.toString())
+    return out
+}
+
 repositories {
     mavenCentral()
+}
+
+dependencyLocking {
+    lockAllConfigurations()
 }
 
 val guiOnly by configurations.creating
@@ -46,7 +71,7 @@ tasks.register<JavaExec>("runGui") {
     classpath = sourceSets["main"].runtimeClasspath
     mainClass.set("io.github.sinaraz.gui.GuiMain")
     val guiArgs = (findProperty("guiArgs") as String?) ?: ""
-    args = guiArgs.split(" ").filter { it.isNotBlank() }
+    args = splitArgs(guiArgs)
 }
 
 tasks.withType<JavaCompile>().configureEach {
@@ -88,7 +113,7 @@ tasks.register<JavaExec>("runSample") {
     classpath = sourceSets["samples"].runtimeClasspath
     mainClass.set("io.github.sinaraz.samples." + ((findProperty("sample") as String?) ?: "QuickStart"))
     val sampleArgs = (findProperty("sampleArgs") as String?) ?: ""
-    args = sampleArgs.split(" ").filter { it.isNotBlank() }
+    args = splitArgs(sampleArgs)
 }
 
 
@@ -109,6 +134,31 @@ tasks.named<Javadoc>("javadoc") {
 tasks.jar {
     exclude("io/github/sinaraz/gui/**")
     exclude("io/github/sinaraz/cli/**")
+    manifest {
+        attributes(
+            "Automatic-Module-Name" to "io.github.sinaraz.judio",
+            "Implementation-Title" to "Judio",
+            "Implementation-Version" to project.version,
+        )
+    }
+    from(rootDir) {
+        include("LICENSE-MIT", "NOTICE.txt")
+        into("META-INF")
+    }
+}
+
+tasks.named<Jar>("sourcesJar") {
+    exclude("io/github/sinaraz/gui/**")
+    exclude("io/github/sinaraz/cli/**")
+}
+
+// The application distributions would contain the trimmed library jar (no CLI/GUI
+// classes) and therefore cannot start; demos run via `run`/`runGui`/`runSample` instead.
+tasks.named("distTar") { enabled = false }
+tasks.named("distZip") { enabled = false }
+
+tasks.check {
+    dependsOn("compileSamplesJava", "compileBenchJava")
 }
 
 publishing {
@@ -145,15 +195,30 @@ publishing {
 }
 
 signing {
+    // Signing is required only when a signatory is actually configured (the
+    // maintainer's machine). Contributors without keys can still build, test and
+    // publishToMavenLocal. Configure signing.keyId/password/secretKeyRingFile or
+    // the in-memory signingInMemoryKey* properties in ~/.gradle/gradle.properties.
     sign(publishing.publications["mavenJava"])
 }
 
 mavenCentral {
-    // Reads the credentials you put in ~/.gradle/gradle.properties
-    authToken.set(
-        Base64.getEncoder().encodeToString(
-            "${project.findProperty("sonatypeUsername")}:${project.findProperty("sonatypePassword")}".toByteArray()
+    // Reads the credentials you put in ~/.gradle/gradle.properties (never in the project).
+    val sonatypeUser = project.findProperty("sonatypeUsername") as String?
+    val sonatypePass = project.findProperty("sonatypePassword") as String?
+    if (sonatypeUser != null && sonatypePass != null) {
+        authToken.set(
+            Base64.getEncoder().encodeToString(
+                "$sonatypeUser:$sonatypePass".toByteArray()
+            )
         )
-    )
-    publishingType.set("AUTOMATIC") // or "USER_MANAGED"
+    }
+    publishingType.set("AUTOMATIC")
+}
+
+
+val signingConfigured = listOf("signing.keyId", "signingInMemoryKey", "signingInMemoryKeyId")
+    .any { project.hasProperty(it) }
+tasks.withType<Sign>().configureEach {
+    onlyIf { signingConfigured }
 }
