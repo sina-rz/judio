@@ -1,6 +1,5 @@
 package io.github.sinaraz.internal.engine;
 
-import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
@@ -71,8 +70,10 @@ public final class AudioPlaybackEngine implements AutoCloseable {
     private final Condition wake = lock.newCondition();
     /** Signalled when the worker has stopped the output after a pause. */
     private final Condition outputSettled = lock.newCondition();
-    /** Upper bound on how long pause() waits for the in-flight device write to finish. */
-    private static final Duration SETTLE_TIMEOUT = Duration.ofSeconds(2);
+    /** Floor for how long pause() waits for the in-flight device write to finish. */
+    private static final Duration SETTLE_TIMEOUT_MIN = Duration.ofSeconds(2);
+    /** Ceiling for the pause settle wait, however large the device buffer is. */
+    private static final Duration SETTLE_TIMEOUT_MAX = Duration.ofSeconds(15);
     /** Poll interval while the device plays out the final buffer. */
     private static final long PLAYOUT_POLL_NANOS = 20_000_000L;
     private boolean settlePending;   // guarded by lock: pause() asked the worker to stop the output
@@ -238,7 +239,9 @@ public final class AudioPlaybackEngine implements AutoCloseable {
 
     /**
      * Pauses playback. Returns once the audio output has stopped and the reported position is
-     * final, which takes at most one device write (bounded by {@link #SETTLE_TIMEOUT}).
+     * final, which takes at most one device write (bounded by a timeout scaled to the
+     * configured device buffer duration, between {@link #SETTLE_TIMEOUT_MIN} and
+     * {@link #SETTLE_TIMEOUT_MAX}).
      */
     public void pause() {
         lock.lock();
@@ -264,12 +267,24 @@ public final class AudioPlaybackEngine implements AutoCloseable {
         }
     }
 
+    /** How long pause() may wait: at least the floor, at least one full device buffer. */
+    private Duration settleTimeoutLocked() {
+        int rate = info != null ? info.sampleRate() : 44_100;
+        long bufferFrames = config.outputBufferBytes() / 4L;  // canonical stereo 16-bit
+        Duration bufferDuration = Duration.ofMillis(bufferFrames * 1000L / Math.max(1, rate));
+        Duration timeout = bufferDuration.plusMillis(500);
+        if (timeout.compareTo(SETTLE_TIMEOUT_MIN) < 0) {
+            return SETTLE_TIMEOUT_MIN;
+        }
+        return timeout.compareTo(SETTLE_TIMEOUT_MAX) > 0 ? SETTLE_TIMEOUT_MAX : timeout;
+    }
+
     /** Caller holds the lock. Waits until the worker completes a pass in which playback is stopped. */
     private void awaitOutputSettledLocked() {
         long seen = settleEpoch;
         settlePending = true;
         wake.signalAll();
-        long remaining = SETTLE_TIMEOUT.toNanos();
+        long remaining = settleTimeoutLocked().toNanos();
         while (settleEpoch == seen && !closed && remaining > 0) {
             try {
                 remaining = outputSettled.awaitNanos(remaining);
@@ -320,13 +335,7 @@ public final class AudioPlaybackEngine implements AutoCloseable {
         try {
             requireOpenLocked("stop");
             switch (state) {
-                case PLAYING, PAUSED, READY, ENDED -> {
-                    pendingStop = true;
-                    pendingSeek = null;
-                    pendingAutoPlay = false;
-                    transitionLocked(PlaybackState.STOPPING);
-                }
-                case SEEKING -> {
+                case PLAYING, PAUSED, READY, ENDED, SEEKING -> {
                     pendingStop = true;
                     pendingSeek = null;
                     pendingAutoPlay = false;
@@ -362,9 +371,18 @@ public final class AudioPlaybackEngine implements AutoCloseable {
         Objects.requireNonNull(offset, "offset");
         lock.lock();
         try {
-            seekLocked(position.plus(offset));
+            seekLocked(saturatingPlus(position, offset));
         } finally {
             lock.unlock();
+        }
+    }
+
+    /** {@code base + offset} clamped instead of overflowing for extreme offsets. */
+    private static Duration saturatingPlus(Duration base, Duration offset) {
+        try {
+            return base.plus(offset);
+        } catch (java.time.DateTimeException | ArithmeticException overflow) {
+            return offset.isNegative() ? Duration.ZERO : Duration.ofNanos(Long.MAX_VALUE);
         }
     }
 
@@ -380,7 +398,7 @@ public final class AudioPlaybackEngine implements AutoCloseable {
         lock.lock();
         try {
             requireOpenLocked("setVolume");
-            volume = Math.max(0.0, Math.min(1.0, value));
+            volume = Math.clamp(value, 0.0, 1.0);
             volumeGeneration++;
             publishStateLocked();
             wake.signalAll();
@@ -497,7 +515,7 @@ public final class AudioPlaybackEngine implements AutoCloseable {
         lock.lock();
         try {
             requireOpenLocked("setPan");
-            pan = Math.max(-1.0, Math.min(1.0, value));
+            pan = Math.clamp(value, -1.0, 1.0);
             publishStateLocked();
             wake.signalAll();
         } finally {
