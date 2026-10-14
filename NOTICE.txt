@@ -1,0 +1,13 @@
+Judio
+Copyright (c) 2026 Sina Raz
+
+This project is released under the MIT License (see LICENSE-MIT).
+
+Third-party components bundled or required at runtime:
+
+- JLayer 1.0.1 (javazoom:jlayer), GNU Lesser General Public License 2.1.
+  Pure-Java MP3 decoder. Used only for MP3 decoding. The published judio
+  artifact depends on it as a normal (separate) Maven dependency; it is not
+  shaded or modified, so it can be replaced with a compatible build.
+- FlatLaf 3.7.2 (com.formdev:flatlaf), Apache License 2.0.
+  Used only by the optional Swing demo player; not required by the library.
