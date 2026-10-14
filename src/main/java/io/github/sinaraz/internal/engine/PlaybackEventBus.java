@@ -35,6 +35,8 @@ public final class PlaybackEventBus implements AutoCloseable {
     private final ExecutorService executor;
     private final AtomicReference<PlaybackSnapshot> pendingProgress = new AtomicReference<>();
     private final AtomicBoolean progressQueued = new AtomicBoolean(false);
+    /** Guards pendingProgress/progressQueued so take-and-clear is atomic. */
+    private final Object progressLock = new Object();
     private final Duration closeTimeout;
     private volatile boolean closed;
 
@@ -49,7 +51,9 @@ public final class PlaybackEventBus implements AutoCloseable {
     }
 
     public void addListener(PlaybackListener listener) {
-        listeners.add(Objects.requireNonNull(listener, "listener"));
+        // addIfAbsent: registering the same instance twice has no extra effect,
+        // as documented on JudioPlayer.addListener.
+        listeners.addIfAbsent(Objects.requireNonNull(listener, "listener"));
     }
 
     public void removeListener(PlaybackListener listener) {
@@ -75,19 +79,31 @@ public final class PlaybackEventBus implements AutoCloseable {
         if (closed) {
             return;
         }
-        pendingProgress.set(snapshot);
-        if (progressQueued.compareAndSet(false, true)) {
+        boolean enqueue;
+        synchronized (progressLock) {
+            pendingProgress.set(snapshot);
+            enqueue = progressQueued.compareAndSet(false, true);
+        }
+        if (enqueue) {
             try {
                 executor.execute(this::deliverPendingProgress);
             } catch (RejectedExecutionException ignored) {
-                progressQueued.set(false);
+                synchronized (progressLock) {
+                    progressQueued.set(false);
+                }
             }
         }
     }
 
     private void deliverPendingProgress() {
-        progressQueued.set(false);
-        PlaybackSnapshot snapshot = pendingProgress.getAndSet(null);
+        PlaybackSnapshot snapshot;
+        synchronized (progressLock) {
+            // Take the snapshot and clear the flag atomically: a publisher racing
+            // this method either lands in this delivery or queues a new one,
+            // never neither, and never observes a newer snapshot out of order.
+            snapshot = pendingProgress.getAndSet(null);
+            progressQueued.set(false);
+        }
         if (snapshot != null) {
             dispatch(listener -> listener.onProgress(snapshot));
         }
