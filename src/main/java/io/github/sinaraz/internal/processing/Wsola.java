@@ -102,7 +102,7 @@ public final class Wsola {
      *
      * @param src    interleaved stereo input, at least {@code 2 * frames} floats
      * @param frames number of input frames in {@code src}
-     * @param speed  time scale: 2.0 is twice as fast, 0.5 half as fast; must be positive and finite
+     * @param speed  timescale: 2.0 is twice as fast, 0.5 half as fast; must be positive and finite
      * @return number of output frames available from {@link #output()}; may be zero
      */
     public int process(float[] src, int frames, double speed) {
@@ -164,6 +164,7 @@ public final class Wsola {
 
     /** Drops all history, so the next input starts a new stream (used after seeks and loads). */
     public void reset() {
+        lastSpeed = 1.0;
         emitLimit = Long.MAX_VALUE;
         inFrames = 0;
         inBase = 0L;
