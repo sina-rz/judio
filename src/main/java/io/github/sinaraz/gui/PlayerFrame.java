@@ -60,6 +60,7 @@ final class PlayerFrame extends JFrame {
     private PlaybackState lastState = PlaybackState.EMPTY;
     private int errorCount;
     private long coverToken;
+    private SwingWorker<BufferedImage, Void> coverWorker;
     private boolean shuttingDown;
 
     PlayerFrame(JudioPlayer player, boolean simulatedAudio, List<Path> initialFiles) {
@@ -124,7 +125,8 @@ final class PlayerFrame extends JFrame {
         file.add(menuItem("Quit", KeyStroke.getKeyStroke(KeyEvent.VK_Q, mask), event -> shutdown()));
 
         JMenu playback = new JMenu("Playback");
-        playback.add(menuItem("Play / Pause", KeyStroke.getKeyStroke(KeyEvent.VK_SPACE, 0),
+        playback.add(menuItem("Play / Pause",
+                KeyStroke.getKeyStroke(KeyEvent.VK_SPACE, InputEvent.CTRL_DOWN_MASK),
                 event -> togglePlayPause()));
         playback.add(menuItem("Stop", KeyStroke.getKeyStroke(KeyEvent.VK_PERIOD, mask), event -> actions.stop()));
         playback.add(menuItem("Previous", KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, mask), event -> actions.previous()));
@@ -167,7 +169,7 @@ final class PlayerFrame extends JFrame {
                         + "Pure-Java playback engine with a Swing front end.<br><br>"
                         + "Formats: MP3, WAV, AIFF, AU. FLAC and OGG are not decoded.<br>"
                         + "Speed uses resampling, so it also changes pitch.<br>"
-                        + "Keyboard: Space play/pause, Ctrl+. stop, Ctrl+Left/Right previous/next,"
+                        + "Keyboard: Ctrl+Space play/pause, Ctrl+. stop, Ctrl+Left/Right previous/next,"
                         + " Alt+Left/Right seek 5 s.</html>",
                 "About", JOptionPane.INFORMATION_MESSAGE);
     }
@@ -188,7 +190,10 @@ final class PlayerFrame extends JFrame {
     private void loadCover(Track track) {
         long token = ++coverToken;
         nowPlaying.showCover(null);
-        new SwingWorker<BufferedImage, Void>() {
+        if (coverWorker != null) {
+            coverWorker.cancel(true); // superseded: stop its file I/O early
+        }
+        coverWorker = new SwingWorker<BufferedImage, Void>() {
             @Override
             protected BufferedImage doInBackground() throws IOException {
                 Optional<CoverArt> art = player.coverArt(track);
@@ -212,7 +217,8 @@ final class PlayerFrame extends JFrame {
                     nowPlaying.showCover(null);
                 }
             }
-        }.execute();
+        };
+        coverWorker.execute();
     }
 
     private void reportError(String where, String message) {
