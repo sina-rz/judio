@@ -47,11 +47,20 @@ public final class SystemAudioOutput implements AudioOutput {
             throw new AudioDeviceException("open",
                     "no output line supports " + requested + " with a " + bufferBytes + "-byte buffer", null);
         }
+        SourceDataLine opened = null;
         try {
-            SourceDataLine opened = (SourceDataLine) AudioSystem.getLine(info);
+            opened = (SourceDataLine) AudioSystem.getLine(info);
             opened.open(requested, bufferBytes);
             this.line = opened;
         } catch (LineUnavailableException | IllegalArgumentException | SecurityException e) {
+            // Do not leak the line: some drivers hold the device from getLine().
+            if (opened != null) {
+                try {
+                    opened.close();
+                } catch (RuntimeException ignored) {
+                    // The open failure is the error worth reporting.
+                }
+            }
             throw new AudioDeviceException("open", "audio output device unavailable: " + e.getMessage(), e);
         }
         this.format = requested;
