@@ -13,6 +13,12 @@ import javax.net.ssl.SSLContext;
  * <p>The defaults suit most internet radio and podcast servers. Change them when a server is slow,
  * needs authentication, or uses a private certificate authority.
  *
+ * <p><b>Trust boundary:</b> a stream address makes the host running this library open an
+ * outbound HTTP(S) connection to that address (following redirects). Never queue
+ * untrusted, user-supplied addresses without validating them first: an address can
+ * point at loopback, link-local (cloud metadata) or LAN services. This library
+ * deliberately does not guess which addresses your application trusts.
+ *
  * @param connectTimeout how long to wait for the server to answer a request
  * @param readTimeout    how long a stream may go without delivering data before it fails
  * @param bufferBytes    how much audio is fetched ahead of the decoder, which absorbs network jitter
@@ -30,6 +36,10 @@ public record StreamOptions(
 
     /** Smallest allowed read-ahead buffer, 32 KiB. */
     public static final int MIN_BUFFER_BYTES = 32 * 1024;
+    /** Largest allowed read-ahead buffer, 64 MiB: bounds a single allocation. */
+    public static final int MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+    /** Largest accepted resume-attempt count per dropped connection. */
+    public static final int MAX_RETRIES_LIMIT = 100;
 
     /** Checks each value and rejects the impossible ones. */
     public StreamOptions {
@@ -41,11 +51,12 @@ public record StreamOptions(
         if (readTimeout.isNegative() || readTimeout.isZero()) {
             throw new IllegalArgumentException("readTimeout must be positive");
         }
-        if (bufferBytes < MIN_BUFFER_BYTES) {
-            throw new IllegalArgumentException("bufferBytes must be at least " + MIN_BUFFER_BYTES);
+        if (bufferBytes < MIN_BUFFER_BYTES || bufferBytes > MAX_BUFFER_BYTES) {
+            throw new IllegalArgumentException(
+                    "bufferBytes must be in [" + MIN_BUFFER_BYTES + ", " + MAX_BUFFER_BYTES + "]");
         }
-        if (maxRetries < 0) {
-            throw new IllegalArgumentException("maxRetries must not be negative");
+        if (maxRetries < 0 || maxRetries > MAX_RETRIES_LIMIT) {
+            throw new IllegalArgumentException("maxRetries must be in [0, " + MAX_RETRIES_LIMIT + "]");
         }
         headers = Collections.unmodifiableMap(new LinkedHashMap<>(Objects.requireNonNull(headers, "headers")));
     }
