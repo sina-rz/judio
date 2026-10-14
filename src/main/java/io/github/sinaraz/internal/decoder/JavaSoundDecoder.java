@@ -109,11 +109,15 @@ public final class JavaSoundDecoder implements AudioDecoder {
             return -1;
         }
         int rem = n % frameSize;
+        int zeroReads = 0;
         while (rem != 0) {
             int k = stream.read(buffer, offset + n, frameSize - rem);
             if (k < 0) {
                 n -= rem; // drop a trailing partial frame at end of stream
                 break;
+            }
+            if (k == 0 && ++zeroReads > 1000) {
+                throw new IOException("audio stream returned no data repeatedly: " + path);
             }
             n += k;
             rem = n % frameSize;
@@ -134,8 +138,12 @@ public final class JavaSoundDecoder implements AudioDecoder {
         if (frameLength >= 0) {
             target = Math.min(target, frameLength);
         }
-        stream.close();
-        stream = reopenConverted();
+        // Build the replacement first: a failed reopen must not leave this
+        // decoder holding a closed stream.
+        AudioInputStream replacement = reopenConverted();
+        AudioInputStream old = stream;
+        stream = replacement;
+        old.close();
         long toSkip = target * frameSize;
         byte[] buf = new byte[SKIP_CHUNK];
         while (toSkip > 0) {
