@@ -187,15 +187,20 @@ public final class StreamingMp3Decoder implements AudioDecoder {
         long targetFrame = Math.round(targetNanos / 1e9 * sampleRate);
         // Land a few frames early: the pre-roll frames are discarded, so output starts at the target.
         long landingFrame = Math.max(0L, targetFrame - PREROLL_FRAMES * samplesPerFrame);
-        long byteOffset = byteOffsetFor(landingFrame / (totalNanos / 1e9 * sampleRate));
+        long totalFrames = info.frameCount();
+        long byteOffset = byteOffsetFor(seekFraction(landingFrame, totalFrames));
 
-        closeCurrent();
+        // Open the replacement stream before closing the current one, so a
+        // failed reconnect leaves the decoder usable instead of half-closed.
+        InputStream replacement;
         if (byteOffset >= byteLength) {
             // At or past the end: nothing left to decode.
-            this.in = new ByteArrayInputStream(new byte[0]);
+            replacement = new ByteArrayInputStream(new byte[0]);
         } else {
-            this.in = reopen.open(byteOffset);
+            replacement = reopen.open(byteOffset);
         }
+        closeCurrent();
+        this.in = replacement;
         this.bitstream = new Bitstream(new FullReadInputStream(in));
         this.decoder = new Decoder();
         pcmPos = 0;
@@ -241,6 +246,19 @@ public final class StreamingMp3Decoder implements AudioDecoder {
         } finally {
             in.close();
         }
+    }
+
+    /**
+     * Fraction of the stream at {@code frame} out of {@code totalFrames}, clamped to
+     * {@code [0, 1]}. Package-private for tests: the previous implementation divided
+     * by whole seconds, which divided by zero under one second and skewed short files.
+     */
+    static double seekFraction(long frame, long totalFrames) {
+        if (totalFrames <= 0) {
+            return 0.0;
+        }
+        double fraction = (double) frame / (double) totalFrames;
+        return Math.min(Math.max(fraction, 0.0), 1.0);
     }
 
     /**
