@@ -361,6 +361,15 @@ public final class Mp3Decoder implements AudioDecoder {
                     if (rate == 0) {
                         rate = h.frequency();
                         channels = h.mode() == Header.SINGLE_CHANNEL ? 1 : 2;
+                    } else if (h.frequency() != rate
+                            || (h.mode() == Header.SINGLE_CHANNEL ? 1 : 2) != channels) {
+                        // Concatenated files with different rates/channels would
+                        // otherwise play at the wrong speed with no indication.
+                        throw new CorruptFileException("open",
+                                "MP3 format changes mid-file (sample rate or channels)", path, null);
+                    }
+                    if ((count & 0x3FF) == 0 && Thread.currentThread().isInterrupted()) {
+                        throw new IOException("interrupted while scanning MP3: " + path);
                     }
                     if (count == offsets.length) {
                         offsets = Arrays.copyOf(offsets, count * 2);
