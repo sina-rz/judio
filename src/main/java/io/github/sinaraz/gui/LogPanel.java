@@ -41,7 +41,8 @@ final class LogPanel extends JPanel {
     private void append(String message) {
         area.append(TIME.format(LocalTime.now()) + "  " + message + "\n");
         int lines = area.getLineCount();
-        if (lines > MAX_LINES) {
+        // Trim in batches: trimming on every line is O(document) per append.
+        if (lines > MAX_LINES + 100) {
             try {
                 area.replaceRange("", 0, area.getLineStartOffset(lines - MAX_LINES));
             } catch (BadLocationException e) {
