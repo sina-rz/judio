@@ -47,6 +47,13 @@ public final class Id3Reader {
                     byte[] body = new byte[tagSize];
                     int got = readAt(ch, 10, ByteBuffer.wrap(body));
                     if (got > 0) {
+                        if (major == 3 && (flags & 0x80) != 0) {
+                            // v2.3 unsynchronisation: 0xFF 0x00 in the stored tag
+                            // is an escaped 0xFF. Decode before frame parsing.
+                            // (v2.4 signals unsynchronisation per frame instead.)
+                            body = removeUnsynchronisation(body, got);
+                            got = body.length;
+                        }
                         cover = parseFrames(body, got, major, flags, v2);
                     }
                 }
@@ -177,6 +184,19 @@ public final class Id3Reader {
             return "image/png";
         }
         return "application/octet-stream";
+    }
+
+    /** Removes v2.3 unsynchronisation escapes ({@code FF 00} -> {@code FF}). */
+    private static byte[] removeUnsynchronisation(byte[] body, int length) {
+        byte[] out = new byte[length];
+        int o = 0;
+        for (int i = 0; i < length; i++) {
+            out[o++] = body[i];
+            if (body[i] == (byte) 0xFF && i + 1 < length && body[i + 1] == 0) {
+                i++; // skip the escape byte
+            }
+        }
+        return java.util.Arrays.copyOf(out, o);
     }
 
     private static int indexOfZero(byte[] b, int from, int end) {
