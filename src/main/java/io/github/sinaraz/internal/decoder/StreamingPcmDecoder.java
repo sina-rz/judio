@@ -40,6 +40,7 @@ public final class StreamingPcmDecoder implements AudioDecoder {
     private final long dataStart;      // byte offset of the first PCM frame, or -1 if not seekable
     private final long totalFrames;
     private final int frameSize;
+    private final int sourceFrameSize;  // frame size in the source encoding (differs from target for 8/24-bit)
     private final AudioInfo info;
     private AudioInputStream stream;
     private long framePos;
@@ -100,6 +101,7 @@ public final class StreamingPcmDecoder implements AudioDecoder {
             this.targetFormat = target;
             this.stream = AudioSystem.getAudioInputStream(target, probe);
             this.frameSize = target.getFrameSize();
+            this.sourceFrameSize = format.getFrameSize();
             long frames = probe.getFrameLength();
             this.totalFrames = Math.max(0L, frames);
             Duration duration = frames > 0
@@ -109,6 +111,10 @@ public final class StreamingPcmDecoder implements AudioDecoder {
                     || format.getEncoding() == AudioFormat.Encoding.PCM_UNSIGNED;
             this.dataStart = (data != null && pcm && reopen != null && byteLength > 0
                     && format.getFrameSize() > 0 && frames > 0) ? data[0] : -1L;
+            if (sourceFrameSize <= 0 && dataStart >= 0) {
+                throw new UnsupportedAudioFormatException("open",
+                        "unknown source frame size in " + source, null, null);
+            }
             this.info = new AudioInfo(
                     duration,
                     (int) rate,
@@ -144,11 +150,15 @@ public final class StreamingPcmDecoder implements AudioDecoder {
             return -1;
         }
         int rem = n % frameSize;
+        int zeroReads = 0;
         while (rem != 0) {
             int k = stream.read(buffer, offset + n, frameSize - rem);
             if (k < 0) {
                 n -= rem; // drop a trailing partial frame at the end of the stream
                 break;
+            }
+            if (k == 0 && ++zeroReads > 1000) {
+                throw new IOException("audio stream returned no data repeatedly: " + source);
             }
             n += k;
             rem = n % frameSize;
@@ -176,14 +186,20 @@ public final class StreamingPcmDecoder implements AudioDecoder {
         Objects.requireNonNull(position, "position");
         long target = Math.round(Math.max(0L, position.toNanos()) / 1e9 * targetFormat.getSampleRate());
         target = Math.min(target, totalFrames);
-        stream.close();
+        // The byte offset must use the SOURCE frame size: for 8-bit or mu-law
+        // sources one source frame is smaller than one canonical 16-bit frame.
         InputStream raw = target >= totalFrames
                 ? new ByteArrayInputStream(new byte[0])
-                : reopen.open(dataStart + target * frameSize);
+                : reopen.open(dataStart + target * sourceFrameSize);
         AudioInputStream source = new AudioInputStream(
                 new BufferedInputStream(new FullReadInputStream(raw)), sourceFormat, totalFrames - target);
-        this.stream = AudioSystem.getAudioInputStream(targetFormat, source);
+        AudioInputStream replacement = AudioSystem.getAudioInputStream(targetFormat, source);
+        // Swap only once the replacement is fully built, so a failed seek
+        // leaves the current stream usable.
+        AudioInputStream old = this.stream;
+        this.stream = replacement;
         this.framePos = target;
+        old.close();
     }
 
     @Override

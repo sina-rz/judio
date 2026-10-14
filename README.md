@@ -5,7 +5,7 @@ It is written in pure Java, so it needs no extra software
 installed on your computer.
 
 
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE-MIT)
 [![Java](https://img.shields.io/badge/JDK-25-orange.svg)](#requirements)
 
 <img alt="judio&#39;s Swing player while a track plays" src="docs/screenshots/gui1.png" width="800"/>
@@ -15,9 +15,20 @@ Judio is available on Maven Central
 
 ![](https://img.shields.io/maven-metadata/v.svg?metadataUrl=https%3A%2F%2Frepo1.maven.org%2Fmaven2%2Fio%2Fgithub%2Fsina-rz%2Fjudio%2Fmaven-metadata.xml&label=maven-central)
 
+```kotlin
+// Gradle (Kotlin DSL)
+dependencies {
+    implementation("io.github.sina-rz:judio:0.1.7")
+}
 ```
-groupId: io.github.sina-rz
-artifactId: judio
+
+```xml
+<!-- Maven -->
+<dependency>
+  <groupId>io.github.sina-rz</groupId>
+  <artifactId>judio</artifactId>
+  <version>0.1.7</version>
+</dependency>
 ```
 
 ## Try it
@@ -50,7 +61,7 @@ No sound card? Add `--null-audio` to play without sound. The timing is real, but
 
 | Format | Status |
 |---|---|
-| MP3 | Supported |
+| MP3 | Supported (MPEG-1/2, Layers I, II and III) |
 | WAV, AIFF, AU | Supported (uncompressed sound) |
 | Internet streams (MP3, WAV, AIFF, AU) | Supported. MP3 and WAV can seek if the server supports it |
 | FLAC, Ogg Vorbis, Opus | Not supported yet |
@@ -74,13 +85,7 @@ pieces fit together.
 The source code is in `src/main/java/io/github/sinaraz`. The public types are in the top package,
 `model`, `error`, and `audio`. Everything in `internal` can change without warning.
 
-## Licences
+## Licence
 
-Judio is released under the MIT License.
-
-| Dependency | Licence | Used for |
-|---|---|---|
-| JLayer 1.0.1 (`javazoom:jlayer`) | LGPL 2.1 | Decoding MP3 |
-| FlatLaf 3.7.2 (`com.formdev:flatlaf`) | Apache 2.0 | The dark look of the graphical player only |
-
-The library and the terminal player need only JLayer. FlatLaf is used only by the graphical player.
+Judio is released under the MIT License (see [LICENSE-MIT](LICENSE-MIT); the same text ships
+inside the jar together with [NOTICE.txt](NOTICE.txt)).
