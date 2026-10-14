@@ -54,6 +54,12 @@ public final class SimulatedAudioOutput implements AudioOutput {
         requireOpen("write");
         int remaining = length;
         while (remaining > 0) {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new AudioDeviceException("write", "interrupted while writing to simulated output", null);
+            }
+            if (!open) {
+                throw new AudioDeviceException("write", "simulated audio output was closed", null);
+            }
             advance();
             long buffered = written - drained;
             long free = capacityBytes - buffered;
@@ -102,6 +108,9 @@ public final class SimulatedAudioOutput implements AudioOutput {
 
     @Override
     public long bufferedFrames() {
+        if (!open || frameSize <= 0) {
+            return 0L;
+        }
         advance();
         return (written - drained) / frameSize;
     }
