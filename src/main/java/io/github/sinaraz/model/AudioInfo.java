@@ -7,7 +7,7 @@ import java.util.Objects;
 /**
  * Description of the canonical PCM stream a decoder produces.
  *
- * @param duration      total duration; {@link Duration#ZERO} only if the source is empty
+ * @param duration      total duration; {@link Duration#ZERO} if the source is empty or its length is unknown (common for streams without a header frame count)
  * @param sampleRate    frames per second, e.g. 44100
  * @param channels      1 (mono) or 2 (stereo) in the canonical output
  * @param sampleSizeBits bits per sample in the canonical output (always 16 for the built-in decoders)
