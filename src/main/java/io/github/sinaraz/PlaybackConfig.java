@@ -27,23 +27,32 @@ public record PlaybackConfig(
         boolean autoAdvanceOnError,
         Duration closeTimeout) {
 
+    /** Largest accepted output buffer (64 MiB): bounds a single allocation. */
+    public static final int MAX_OUTPUT_BUFFER_BYTES = 64 * 1024 * 1024;
+    /** Largest accepted decode chunk (1 MiB): bounds per-chunk allocations. */
+    public static final int MAX_CHUNK_BYTES = 1024 * 1024;
+
     /**
      * Validates the values.
      *
      * @throws IllegalArgumentException if a value is out of range
      */
     public PlaybackConfig {
-        if (outputBufferBytes < 4096) {
-            throw new IllegalArgumentException("outputBufferBytes must be >= 4096");
+        if (outputBufferBytes < 4096 || outputBufferBytes > MAX_OUTPUT_BUFFER_BYTES) {
+            throw new IllegalArgumentException(
+                    "outputBufferBytes must be in [4096, " + MAX_OUTPUT_BUFFER_BYTES + "]");
         }
-        if (chunkBytes <= 0 || chunkBytes % 4 != 0) {
-            throw new IllegalArgumentException("chunkBytes must be a positive multiple of 4");
+        if (chunkBytes <= 0 || chunkBytes % 4 != 0 || chunkBytes > MAX_CHUNK_BYTES) {
+            throw new IllegalArgumentException(
+                    "chunkBytes must be a positive multiple of 4 up to " + MAX_CHUNK_BYTES);
         }
         if (progressInterval == null || progressInterval.isNegative() || progressInterval.isZero()) {
             throw new IllegalArgumentException("progressInterval must be positive");
         }
-        if (!(minSpeed > 0.0) || !(maxSpeed >= minSpeed)) {
-            throw new IllegalArgumentException("speed range must satisfy 0 < minSpeed <= maxSpeed");
+        if (!Double.isFinite(minSpeed) || !Double.isFinite(maxSpeed)
+                || !(minSpeed > 0.0) || !(maxSpeed >= minSpeed)) {
+            throw new IllegalArgumentException(
+                    "speed range must satisfy 0 < minSpeed <= maxSpeed with finite values");
         }
         if (previousRestartThreshold == null || previousRestartThreshold.isNegative()) {
             throw new IllegalArgumentException("previousRestartThreshold must not be negative");
