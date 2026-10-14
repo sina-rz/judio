@@ -3,6 +3,7 @@ package io.github.sinaraz.cli;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.nio.file.Files;
 import java.net.URI;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -120,8 +121,13 @@ public final class ConsoleApp {
             }
             case "load" -> execute(command, () -> {
                 requireArgument(command, argument);
+                Path target = toPath(argument);
+                // Validate first: a bad path must not destroy the current queue.
+                if (!Files.isRegularFile(target)) {
+                    throw new IllegalArgumentException("not a file: " + target);
+                }
                 player.clear();
-                List<Track> added = player.addFiles(List.of(toPath(argument)));
+                List<Track> added = player.addFiles(List.of(target));
                 player.prepare(0);
                 out.println("Loaded: " + added.getFirst().location());
             });
