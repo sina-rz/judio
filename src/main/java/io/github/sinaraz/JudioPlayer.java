@@ -60,7 +60,7 @@ import io.github.sinaraz.model.Track;
 public final class JudioPlayer implements AutoCloseable {
 
     private static final List<String> AUDIO_EXTENSIONS =
-            List.of("mp3", "wav", "wave", "aif", "aiff", "aifc", "au", "snd", "flac", "ogg");
+            List.of("mp3", "wav", "wave", "aif", "aiff", "aifc", "au", "snd");
 
     private final PlaybackConfig config;
     private final QueueManager queue;
@@ -110,6 +110,7 @@ public final class JudioPlayer implements AutoCloseable {
         private PlaybackConfig config = PlaybackConfig.defaults();
         private DecoderProvider decoders = DecoderFactory.standard();
         private Supplier<AudioOutput> output;
+        private boolean simulated;
         private RandomGenerator random = RandomGenerator.getDefault();
 
         private Builder() {}
@@ -144,6 +145,7 @@ public final class JudioPlayer implements AutoCloseable {
          */
         public Builder output(Supplier<AudioOutput> output) {
             this.output = Objects.requireNonNull(output, "output");
+            this.simulated = false;
             return this;
         }
 
@@ -154,7 +156,9 @@ public final class JudioPlayer implements AutoCloseable {
          * @return this builder
          */
         public Builder simulatedOutput() {
-            return output(() -> new SimulatedAudioOutput(config.outputBufferBytes()));
+            this.output = null;
+            this.simulated = true;
+            return this;
         }
 
         /**
@@ -174,10 +178,18 @@ public final class JudioPlayer implements AutoCloseable {
          * @return a new player
          */
         public JudioPlayer build() {
-            Supplier<AudioOutput> device = output != null
-                    ? output
-                    : () -> new SystemAudioOutput(config.outputBufferBytes());
-            return new JudioPlayer(config, decoders, device, random);
+            // Capture the final config value, not the builder: mutating this
+            // builder after build() must not change an already-built player.
+            PlaybackConfig finalConfig = config;
+            Supplier<AudioOutput> device;
+            if (output != null) {
+                device = output;
+            } else if (simulated) {
+                device = () -> new SimulatedAudioOutput(finalConfig.outputBufferBytes());
+            } else {
+                device = () -> new SystemAudioOutput(finalConfig.outputBufferBytes());
+            }
+            return new JudioPlayer(finalConfig, decoders, device, random);
         }
     }
 
@@ -213,14 +225,23 @@ public final class JudioPlayer implements AutoCloseable {
      * @throws QueueException if a path is missing or is not a regular file
      */
     public List<Track> addFiles(List<Path> files) {
+        Objects.requireNonNull(files, "files");
+        requireOpen("add");
         List<Track> created = new ArrayList<>(files.size());
         for (Path file : files) {
+            if (file == null) {
+                throw new QueueException("add", "files must not contain null");
+            }
             if (!Files.isRegularFile(file)) {
                 throw new QueueException("add", "not a file: " + file);
             }
             created.add(Track.fromPath(file));
         }
+        if (created.isEmpty()) {
+            return created;
+        }
         synchronized (gate) {
+            requireOpenLocked("add");
             queue.addAll(created);
             publishQueue();
         }
@@ -229,17 +250,50 @@ public final class JudioPlayer implements AutoCloseable {
     }
 
     /**
+     * Inserts a file at {@code index} in the queue (0..size). Tags are read in the background,
+     * as with {@link #addFiles(List)}.
+     *
+     * @param index zero-based position the new entry should occupy
+     * @param file  the audio file to insert
+     * @return the new queue entry
+     * @throws QueueException if the path is missing, is not a regular file, or the index is out of range
+     */
+    public Track insertFile(int index, Path file) {
+        requireOpen("insert");
+        if (file == null) {
+            throw new QueueException("insert", "file must not be null");
+        }
+        if (!Files.isRegularFile(file)) {
+            throw new QueueException("insert", "not a file: " + file);
+        }
+        Track created = Track.fromPath(file);
+        synchronized (gate) {
+            requireOpenLocked("insert");
+            queue.insert(index, created);
+            publishQueue();
+        }
+        loadTagsAsync(created);
+        return created;
+    }
+
+    /**
      * Adds an {@code http} or {@code https} audio stream to the end of the queue. The stream is
      * fetched while it plays, so nothing is downloaded in full first. Tags are not read from
      * streams. Only the formats that can be decoded from a stream are playable; see the README.
+     *
+     * <p><b>Trust boundary:</b> playing the entry opens an outbound connection to {@code uri}
+     * from this host, following redirects. Do not queue untrusted addresses (for example
+     * loopback, link-local metadata, or LAN services) without validating them first.
      *
      * @param uri absolute http or https address of the audio
      * @return the new queue entry
      * @throws IllegalArgumentException if the URI is not an absolute http or https address with a host
      */
     public Track addUrl(URI uri) {
+        requireOpen("add-url");
         Track created = Track.fromUri(uri);
         synchronized (gate) {
+            requireOpenLocked("add-url");
             queue.addAll(List.of(created));
             publishQueue();
         }
@@ -294,6 +348,7 @@ public final class JudioPlayer implements AutoCloseable {
      */
     public RemoveResult remove(int index) {
         synchronized (gate) {
+            requireOpenLocked("remove");
             RemoveResult result = queue.remove(index);
             if (result.currentRemoved()) {
                 engine.unload();
@@ -311,6 +366,7 @@ public final class JudioPlayer implements AutoCloseable {
      */
     public void move(int from, int to) {
         synchronized (gate) {
+            requireOpenLocked("move");
             queue.move(from, to);
             publishQueue();
         }
@@ -321,6 +377,7 @@ public final class JudioPlayer implements AutoCloseable {
      */
     public void clear() {
         synchronized (gate) {
+            requireOpenLocked("clear");
             engine.unload();
             queue.clear();
             consecutiveFailures = 0;
@@ -362,6 +419,7 @@ public final class JudioPlayer implements AutoCloseable {
             }
             PlaybackState state = engine.snapshot().state();
             if (state == PlaybackState.EMPTY || state == PlaybackState.ERROR) {
+                consecutiveFailures = 0;
                 Track current = queue.current().orElseGet(() -> queue.playAt(0));
                 engine.load(current);
             }
@@ -376,6 +434,7 @@ public final class JudioPlayer implements AutoCloseable {
      */
     public void prepare(int index) {
         synchronized (gate) {
+            requireOpenLocked("prepare");
             Track track = queue.playAt(index);
             consecutiveFailures = 0;
             engine.load(track);
@@ -390,6 +449,7 @@ public final class JudioPlayer implements AutoCloseable {
      */
     public void playAt(int index) {
         synchronized (gate) {
+            requireOpenLocked("play-at");
             Track track = queue.playAt(index);
             consecutiveFailures = 0;
             engine.load(track);
@@ -433,6 +493,7 @@ public final class JudioPlayer implements AutoCloseable {
      */
     public boolean next() {
         synchronized (gate) {
+            requireOpenLocked("next");
             Optional<Track> next = queue.next();
             if (next.isPresent()) {
                 consecutiveFailures = 0;
@@ -456,6 +517,7 @@ public final class JudioPlayer implements AutoCloseable {
      */
     public void previous() {
         synchronized (gate) {
+            requireOpenLocked("previous");
             PlaybackSnapshot snap = engine.snapshot();
             boolean pastThreshold = snap.position().compareTo(config.previousRestartThreshold()) > 0;
             if (pastThreshold && snap.state() != PlaybackState.ENDED && snap.state().hasLoadedTrack()) {
@@ -569,6 +631,7 @@ public final class JudioPlayer implements AutoCloseable {
      */
     public void setRepeat(RepeatMode mode) {
         synchronized (gate) {
+            requireOpenLocked("set-repeat");
             queue.setRepeat(mode);
             publishQueue();
         }
@@ -581,6 +644,7 @@ public final class JudioPlayer implements AutoCloseable {
      */
     public void setShuffle(boolean enabled) {
         synchronized (gate) {
+            requireOpenLocked("set-shuffle");
             queue.setShuffle(enabled);
             publishQueue();
         }
@@ -596,7 +660,9 @@ public final class JudioPlayer implements AutoCloseable {
     }
 
     /**
-     * Reads the embedded cover image for a track from its file.
+     * Reads the embedded cover image for a track from its file. This performs file I/O
+     * synchronously on the calling thread (results are cached per file while it is
+     * unchanged), so call it from a background thread in a UI.
      *
      * @param track the track to read
      * @return the cover, or empty when the file has none
@@ -630,6 +696,20 @@ public final class JudioPlayer implements AutoCloseable {
 
     // ------------------------------------------------------------- internals
 
+    /** Fails fast once the player is closed. Safe to call while holding {@code gate}. */
+    private void requireOpen(String operation) {
+        synchronized (gate) {
+            requireOpenLocked(operation);
+        }
+    }
+
+    /** Caller must hold {@code gate}. */
+    private void requireOpenLocked(String operation) {
+        if (closed) {
+            throw new PlaybackStateException(operation, PlaybackState.CLOSED, "player is closed");
+        }
+    }
+
     private void publishQueue() {
         List<Track> items = queue.snapshot();
         QueueSnapshot info = queue.snapshotInfo();
@@ -640,14 +720,25 @@ public final class JudioPlayer implements AutoCloseable {
         if (track.isRemote()) {
             return; // tags are not read from network streams
         }
+        synchronized (gate) {
+            if (closed) {
+                return; // never submit work to a shut-down metadata pool
+            }
+        }
         metadata.loadAsync(track).thenAccept(result -> {
             synchronized (gate) {
                 if (closed) {
                     return;
                 }
-                boolean updated = queue.update(result.trackId(), t -> result.error() != null
-                        ? t.withMetadataFailure(result.error())
-                        : t.withMetadata(result.metadata())).isPresent();
+                boolean updated = queue.update(result.trackId(), t -> {
+                    if (result.error() != null) {
+                        return t.withMetadataFailure(result.error());
+                    }
+                    if (result.metadata() != null) {
+                        return t.withMetadata(result.metadata());
+                    }
+                    return t.withMetadataFailure("metadata unavailable");
+                }).isPresent();
                 if (updated) {
                     publishQueue();
                 }
