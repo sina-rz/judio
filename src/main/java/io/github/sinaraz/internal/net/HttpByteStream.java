@@ -49,10 +49,11 @@ public final class HttpByteStream extends InputStream {
     private boolean eof;         // server finished the body
     private boolean closed;
     private RemoteSourceException failure;
-    private long fetchedBytes;   // bytes received from the server, equal to the next range offset
-    private int retriesLeft;
-    private boolean rangeSupported;
-    private long totalLength = -1L; // full resource size from the response headers, or -1 if unknown
+    private long fetchedBytes;   // bytes received from the server, equal to the next range offset (fetch thread only)
+    private int retriesLeft;     // resume attempts left for the current incident (fetch thread only)
+    // Written by the fetch thread (and the constructor), read by decoder threads:
+    private volatile boolean rangeSupported;
+    private volatile long totalLength = -1L; // full resource size from the response headers, or -1 if unknown
     private InputStream body;    // guarded by this; closed from close() or on reconnect
 
     /**
@@ -131,7 +132,7 @@ public final class HttpByteStream extends InputStream {
         long deadline = System.nanoTime() + options.readTimeout().toNanos();
         while (count == 0) {
             if (closed) {
-                throw new IOException("stream is closed: " + uri);
+                throw new IOException("stream is closed: " + redacted(uri));
             }
             if (failure != null) {
                 throw failure;
@@ -142,13 +143,13 @@ public final class HttpByteStream extends InputStream {
             long remaining = deadline - System.nanoTime();
             if (remaining <= 0) {
                 throw new RemoteSourceException("read",
-                        "no data received for " + options.readTimeout() + " from " + uri, uri, -1, null);
+                        "no data received for " + options.readTimeout() + " from " + redacted(uri), uri, -1, null);
             }
             try {
                 TimeUnit.NANOSECONDS.timedWait(this, remaining);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                throw new InterruptedIOException("interrupted while waiting for " + uri);
+                throw new InterruptedIOException("interrupted while waiting for " + redacted(uri));
             }
         }
         int n = Math.min(length, Math.min(count, ring.length - head));
@@ -179,6 +180,10 @@ public final class HttpByteStream extends InputStream {
             notifyAll();
         }
         closeQuietly(toClose);
+        Thread f = fetcher;
+        if (f != null && f != Thread.currentThread()) {
+            f.interrupt();
+        }
     }
 
     // ------------------------------------------------------------------ fetch thread
@@ -195,7 +200,22 @@ public final class HttpByteStream extends InputStream {
                     current = body;
                 }
                 if (current == null) {
-                    current = reconnect();
+                    try {
+                        current = reconnect();
+                    } catch (RemoteSourceException reconnectFailure) {
+                        if (isClosed()) {
+                            return;
+                        }
+                        if (retriesLeft <= 0) {
+                            fail(reconnectFailure);
+                            return;
+                        }
+                        retriesLeft--;
+                        if (!sleepBackoff()) {
+                            return;
+                        }
+                        continue;
+                    }
                     if (current == null) {
                         return; // closed while reconnecting
                     }
@@ -209,7 +229,7 @@ public final class HttpByteStream extends InputStream {
                     }
                     if (!canResume()) {
                         fail(new RemoteSourceException("read",
-                                "connection lost and cannot be resumed: " + uri, uri, -1, e));
+                                "connection lost and cannot be resumed: " + redacted(uri), uri, -1, e));
                         return;
                     }
                     retriesLeft--;
@@ -224,6 +244,9 @@ public final class HttpByteStream extends InputStream {
                     return;
                 }
                 fetchedBytes += n;
+                // Data is flowing again: the resume budget is per incident,
+                // not a lifetime allowance for the whole stream.
+                retriesLeft = options.maxRetries();
                 if (!publish(chunk, n)) {
                     return;
                 }
@@ -340,21 +363,24 @@ public final class HttpByteStream extends InputStream {
             response = client.send(request.build(), HttpResponse.BodyHandlers.ofInputStream());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new RemoteSourceException("open", "interrupted while connecting to " + uri, uri, -1, e);
+            throw new RemoteSourceException("open", "interrupted while connecting to " + redacted(uri), uri, -1, e);
         } catch (IOException | IllegalArgumentException e) {
             throw new RemoteSourceException(offset == 0 ? "open" : "resume",
-                    "cannot connect to " + uri + ": " + e.getMessage(), uri, -1, e);
+                    "cannot connect to " + redacted(uri) + ": " + e.getMessage(), uri, -1, e);
         }
         int status = response.statusCode();
         InputStream in = response.body();
         if (status == 206) {
             rangeSupported = true;
-            totalLength = totalFromContentRange(response.headers().firstValue("Content-Range").orElse(null));
+            long rangedTotal = totalFromContentRange(response.headers().firstValue("Content-Range").orElse(null));
+            if (rangedTotal >= 0) {
+                totalLength = rangedTotal;
+            }
         } else if (status == 200) {
             if (offset > 0) {
                 closeQuietly(in);
                 throw new RemoteSourceException("resume",
-                        "server ignored the range request; the stream cannot be resumed: " + uri, uri, status, null);
+                        "server ignored the range request; the stream cannot be resumed: " + redacted(uri), uri, status, null);
             }
             rangeSupported = response.headers().firstValue("Accept-Ranges")
                     .map(v -> v.equalsIgnoreCase("bytes")).orElse(false);
@@ -363,7 +389,7 @@ public final class HttpByteStream extends InputStream {
         } else {
             closeQuietly(in);
             throw new RemoteSourceException(offset == 0 ? "open" : "resume",
-                    "HTTP " + status + " from " + uri, uri, status, null);
+                    "HTTP " + status + " from " + redacted(uri), uri, status, null);
         }
         return in;
     }
@@ -386,6 +412,20 @@ public final class HttpByteStream extends InputStream {
             return value >= 0 ? value : -1L;
         } catch (NumberFormatException e) {
             return -1L; // "*" means the total is unknown
+        }
+    }
+
+    /**
+     * The address with credentials, query and fragment removed, for use in error
+     * messages (signed stream URLs routinely carry secrets in the query string).
+     * The full URI remains available programmatically via the exception.
+     */
+    static String redacted(URI uri) {
+        try {
+            return new URI(uri.getScheme(), null, uri.getHost(), uri.getPort(),
+                    uri.getPath(), null, null).toString();
+        } catch (Exception e) {
+            return uri.getScheme() + "://" + uri.getHost();
         }
     }
 
