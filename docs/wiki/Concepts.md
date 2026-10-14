@@ -38,7 +38,7 @@ from the file.
 | Mode | At the end of a track | At the end of the queue |
 |---|---|---|
 | `OFF` | Play the next track | Stop |
-| `ONE` | Replay the same track | Stop |
+| `ONE` | Replay the same track | Replay the same track (the queue never advances) |
 | `ALL` | Play the next track | Start again from the first track |
 
 **Shuffle** changes the play order but not the visible queue. Pass a seeded `Random` to the builder
@@ -100,9 +100,13 @@ A **listener** implements `PlaybackListener`, which has one default method per e
 - `onPlaybackCompleted`: a track played to its end.
 - `onError`: something failed, such as a corrupt file or a lost device.
 
-Add a listener with `addListener(...)`. Listeners run on one dedicated event thread, in the order
-the events happened. They never run on the audio thread, so a slow listener cannot cause a click
-or a stutter. An exception thrown by a listener is logged, and playback continues.
+Add a listener with `addListener(...)`. Registering the same listener instance twice has no
+extra effect, and `removeListener(...)` stops its deliveries. Listeners run on one dedicated
+event thread: state, track, queue, and completion events are delivered in the order they were
+published, while periodic progress updates are coalesced — if a listener falls behind, progress
+events may be dropped so the latest position is delivered instead of a backlog. They never run
+on the audio thread, so a slow listener cannot cause a click or a stutter. An exception thrown
+by a listener is logged, and playback continues.
 
 ## Threads
 
@@ -149,7 +153,10 @@ Streams differ from files in three ways:
 A background thread keeps a read-ahead buffer full. If the connection drops, judio reconnects with an
 HTTP range request and continues where it stopped, when the server supports ranges. When the network
 stalls past the read timeout, or the server refuses the request, a `RemoteSourceException` reports the
-address and the HTTP status. `StreamOptions` sets the timeouts, the buffer size, the retry count, and
+address and the HTTP status. Treat stream addresses as untrusted input: judio connects to
+whatever host an address names (including private or loopback addresses) and follows redirects,
+so an application that takes addresses from users should validate them first (see the
+`addUrl` Javadoc). `StreamOptions` sets the timeouts, the buffer size, the retry count, and
 any request headers.
 
 ## Audio output
