@@ -1,3 +1,22 @@
+## [0.2.0]
+
+### Added
+- Pure-Java Ogg Opus playback via Concentus and Ogg Vorbis playback via JOrbis, with a separate
+  bounded Ogg page/packet reader. Local files are indexed for granule-exact duration and seeking;
+  HTTP/HTTPS Ogg streams decode incrementally with unknown duration and reset-and-replay seeking.
+- Local Ogg Vorbis comments/OpusTags metadata and embedded cover-art extraction.
+- End-to-end Ogg tests through `JudioPlayer`, plus local-file, HTTP, HTTPS, chaining, timing,
+  truncation, metadata, CRC, and non-zero-origin coverage. The Vorbis origin test uses the
+  spec-shaped two-packet first audio page, not an injected first-packet granule.
+- Third-party license texts/notices and CC0 fixture provenance. A real Layer II fixture now guards
+  the existing JLayer MPEG Layers I/II/III dispatch; a manual decoder audit is documented.
+
+### Changed
+- HTTP/HTTPS Ogg seeking now reopens the stream and decodes/discards from byte zero, including when
+  the server does not support byte ranges; long seeks can therefore repeat substantial network I/O.
+- Format support documentation now lists local and remote Ogg Opus/Vorbis and their limitations.
+- Corrected the `DecoderFactory` MP3 capability documentation to include MPEG-2.5.
+
 ## [0.1.7] - 2026-10-13
 
 ### Fixed
@@ -56,3 +75,4 @@ First version published to Maven Central.
 
 [0.1.7]: https://github.com/sina-rz/judio/releases/tag/v0.1.7
 [0.1.6]: https://github.com/sina-rz/judio/releases/tag/v0.1.6
+[0.2.0]: https://github.com/sina-rz/judio/releases/tag/v0.2.0
