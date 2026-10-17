@@ -127,9 +127,20 @@ content, not its extension.
 
 | Format | Supported |
 |---|---|
-| MP3 | Yes |
-| WAV, AIFF, AU (PCM) | Yes |
-| FLAC, Ogg Vorbis, Opus | No. They are reported as `UNSUPPORTED_FORMAT`. |
+| MP3 (MPEG-1/2/2.5, Layers I/II/III) | Yes |
+| WAV, AIFF, AU | Yes |
+| Ogg Vorbis, Opus | Yes, pure Java; mono/stereo |
+| FLAC and other Ogg codecs | No. They are reported as `UNSUPPORTED_FORMAT`. |
+
+Local Ogg files are scanned for page granules to report exact playable duration. Seeking resets the
+decoder and decodes/discards from the beginning, so a late seek in a long file can take time. Same-rate,
+same-channel chained Ogg streams are supported; a chain that changes sample rate or channel count is
+rejected. HTTP/HTTPS Ogg playback is incremental and duration/frame count remain unknown. When the
+server advertises byte-range support, seeking probes page granules, opens at a prior page boundary, and
+decodes codec preroll before the requested frame instead of replaying the byte prefix. Without range
+support, remote Ogg is non-seekable. Remote range seeking assumes one monotonic granule timeline;
+global seeking across chained remote Ogg segments is not indexed yet. Remote Ogg comment tags are not
+attached to the track.
 
 The [README](../../README.md) has the full table, including the limits of each decoder.
 
@@ -141,14 +152,18 @@ without downloading the whole file first.
 
 Streams differ from files in three ways:
 
-- **Seeking needs range support.** MP3 and WAV streams can seek when the server reports the file size
-  and answers HTTP range requests. judio then reconnects at the matching byte position. AIFF and AU
-  streams, and servers without range support, throw `SeekNotSupportedException`.
-- **Duration needs a header.** An MP3 with a Xing or Info header reports its exact length. Other MP3
-  streams estimate it from the bitrate and the file size. A WAV stream reports its length when the
-  header states a frame count. Without one, the duration reads as zero and seeking is unavailable.
-- **No tags.** judio does not read ID3 tags from streams, so `Track.isRemote()` is `true` and the
-  metadata status is `NOT_APPLICABLE`.
+- **Seeking depends on the decoder.** MP3 and WAV streams can seek when the server
+  reports the file size and answers HTTP range requests. judio then reconnects at the matching byte
+  position. Ogg Vorbis and Opus streams are incremental; Judio reopens the URL at byte zero and
+  decodes/discards to the requested time. This works without HTTP range support but can be slow for a
+  late seek; call `JudioPlayer.seek(Duration)` or `seekRelative(Duration)`. AIFF and AU streams, and MP3/WAV servers without range support, throw
+  `SeekNotSupportedException`.
+- **Duration may be unknown.** An MP3 with a Xing or Info header reports its exact length. Other MP3
+  streams estimate it from the bitrate and file size. A WAV stream reports its length when the header
+  states a frame count. Ogg streams do not download/scan to the final granule, so their duration and
+  frame count are unknown (`Duration.ZERO` and zero frames).
+- **Remote tags are not loaded.** This includes Ogg Vorbis comments and OpusTags. Remote tracks have
+  `Track.isRemote() == true` and metadata status `NOT_APPLICABLE`.
 
 A background thread keeps a read-ahead buffer full. If the connection drops, judio reconnects with an
 HTTP range request and continues where it stopped, when the server supports ranges. When the network

@@ -18,7 +18,7 @@ Judio is available on Maven Central
 ```kotlin
 // Gradle (Kotlin DSL)
 dependencies {
-    implementation("io.github.sina-rz:judio:0.1.7")
+    implementation("io.github.sina-rz:judio:0.2.0")
 }
 ```
 
@@ -27,7 +27,7 @@ dependencies {
 <dependency>
   <groupId>io.github.sina-rz</groupId>
   <artifactId>judio</artifactId>
-  <version>0.1.7</version>
+  <version>0.2.0</version>
 </dependency>
 ```
 
@@ -48,8 +48,8 @@ No sound card? Add `--null-audio` to play without sound. The timing is real, but
 
 ## What you can do
 
-- Play MP3, WAV, AIFF, and AU files
-- Play internet streams from an `http://` or `https://` address
+- Play MP3, WAV, AIFF, AU, Ogg Vorbis, and Opus files
+- Play MP3, WAV, AIFF, AU, Ogg Vorbis, and Opus streams from `http://` or `https://` addresses
 - Make a queue, with repeat and shuffle
 - Play, pause, resume, stop, seek, skip, and go back
 - Set the volume, mute, pan, and speed
@@ -61,13 +61,13 @@ No sound card? Add `--null-audio` to play without sound. The timing is real, but
 
 | Format | Status |
 |---|---|
-| MP3 | Supported (MPEG-1/2, Layers I, II and III) |
-| WAV, AIFF, AU | Supported (uncompressed sound) |
+| MP3 | Supported (MPEG-1/2/2.5, Layers I, II and III) |
+| WAV, AIFF, AU | Supported (PCM and the built-in Java Sound formats) |
+| Ogg Vorbis, Opus | Supported in pure Java (mono/stereo) |
 | Internet streams (MP3, WAV, AIFF, AU) | Supported. MP3 and WAV can seek if the server supports it |
-| FLAC, Ogg Vorbis, Opus | Not supported yet |
+| HTTP/HTTPS Ogg Vorbis and Opus | Supported incrementally; seeks use HTTP byte ranges and codec preroll when the server advertises range support. Duration is unknown. |
+| FLAC and other Ogg codecs | Not supported |
 
-judio checks what is inside a file, not its name. Details are in the
-[core concepts page](docs/wiki/Concepts.md#decoders-and-formats).
 
 ## Build your own player
 
