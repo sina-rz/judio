@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import io.github.sinaraz.audio.DecoderFactory;
+import io.github.sinaraz.error.CorruptFileException;
 import io.github.sinaraz.error.UnsupportedAudioFormatException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -37,11 +38,11 @@ class DecoderFactoryTest {
     }
 
     @Test
-    void flacAndOggAreReportedAsUnsupported() throws IOException {
+    void flacIsUnsupportedAndMalformedOggIsReportedAsCorrupt() throws IOException {
         Path flac = Files.write(dir.resolve("x.flac"), "fLaC\0\0\0\0".getBytes(StandardCharsets.ISO_8859_1));
         Path ogg = Files.write(dir.resolve("y.ogg"), "OggS\0\0\0\0".getBytes(StandardCharsets.ISO_8859_1));
         assertThrows(UnsupportedAudioFormatException.class, () -> DecoderFactory.standard().open(flac));
-        assertThrows(UnsupportedAudioFormatException.class, () -> DecoderFactory.standard().open(ogg));
+        assertThrows(CorruptFileException.class, () -> DecoderFactory.standard().open(ogg));
     }
 
     @Test

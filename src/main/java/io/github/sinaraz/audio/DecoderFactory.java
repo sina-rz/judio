@@ -20,6 +20,7 @@ import io.github.sinaraz.internal.decoder.PcmFileDecoder;
 import io.github.sinaraz.internal.decoder.StreamingMp3Decoder;
 import io.github.sinaraz.internal.decoder.StreamingPcmDecoder;
 import io.github.sinaraz.internal.net.HttpByteStream;
+import io.github.sinaraz.internal.ogg.OggAudioDecoder;
 import io.github.sinaraz.model.MediaLocation;
 
 /**
@@ -27,15 +28,18 @@ import io.github.sinaraz.model.MediaLocation;
  *
  * <p>Supported containers in this build:
  * <ul>
- *   <li>MP3 (MPEG-1/2/2.5 Layer III) via {@link Mp3Decoder} (JLayer). Remote MP3 streams use a
+ *   <li>MP3 (MPEG-1/2/2.5 Layers I, II and III) via {@link Mp3Decoder} (JLayer). Remote MP3 streams use a
  *       sequential decoder without seeking.</li>
  *   <li>WAV, AIFF, AU (including µ-law and A-law) via {@link JavaSoundDecoder} (built-in Java Sound).
  *       Remote streams use a sequential Java Sound decoder.</li>
+ *   <li>Ogg Opus via Concentus and Ogg Vorbis via JOrbis, both pure Java. Local files are indexed for
+ *       exact granule-based duration and reset-and-decode seeking; remote Ogg is incremental, has
+ *       unknown duration, and uses HTTP byte ranges plus codec preroll for seeking when supported.</li>
  *   <li>{@code http} and {@code https} streams, fetched with {@link java.net.http.HttpClient}, with
  *       read-ahead and resume after dropped connections. See {@link StreamOptions}.</li>
  * </ul>
- * FLAC and OGG Vorbis are detected but rejected with {@link UnsupportedAudioFormatException}. No
- * pure-Java decoder for them has been bundled.
+ * FLAC is detected but rejected with {@link UnsupportedAudioFormatException}; no verified pure-Java
+ * FLAC decoder is bundled.
  *
  * <p>A factory holds one HTTP client, created on first use. It can be shared between players.
  */
@@ -101,9 +105,7 @@ public final class DecoderFactory implements DecoderProvider {
             case FLAC -> throw new UnsupportedAudioFormatException("open",
                     "FLAC is not supported in this build: no verified pure-Java FLAC decoder is bundled",
                     file, null);
-            case OGG -> throw new UnsupportedAudioFormatException("open",
-                    "OGG Vorbis is not supported in this build: no verified pure-Java Vorbis decoder is bundled",
-                    file, null);
+            case OGG -> OggAudioDecoder.openLocal(file);
             case UNKNOWN -> openUnknown(file);
         };
     }
@@ -144,8 +146,11 @@ public final class DecoderFactory implements DecoderProvider {
                         offset -> new HttpByteStream(httpClient(), uri, streamOptions, offset));
                 case FLAC -> throw new UnsupportedAudioFormatException("open",
                         "FLAC streams are not supported in this build: " + uri, null, null);
-                case OGG -> throw new UnsupportedAudioFormatException("open",
-                        "OGG Vorbis streams are not supported in this build: " + uri, null, null);
+                case OGG -> OggAudioDecoder.openRemote(buffered, safeOggSource(uri), raw.length(),
+                        raw.supportsRanges()
+                                ? offset -> new BufferedInputStream(
+                                        new HttpByteStream(httpClient(), uri, streamOptions, offset), 64 * 1024)
+                                : null);
                 case UNKNOWN -> throw new UnsupportedAudioFormatException("open",
                         "unrecognised audio stream: " + uri, null, null);
             };
@@ -153,6 +158,11 @@ public final class DecoderFactory implements DecoderProvider {
             raw.close();
             throw e;
         }
+    }
+
+    private static String safeOggSource(URI uri) {
+        String host = uri.getHost();
+        return host == null ? "remote Ogg stream" : uri.getScheme() + "://" + host;
     }
 
     private synchronized HttpClient httpClient() {

@@ -3,11 +3,36 @@ Copyright (c) 2026 Sina Raz
 
 This project is released under the MIT License (see LICENSE-MIT).
 
-Third-party components bundled or required at runtime:
+Third-party components used at runtime:
 
-- JLayer 1.0.1 (javazoom:jlayer), GNU Lesser General Public License 2.1.
-  Pure-Java MP3 decoder. Used only for MP3 decoding. The published judio
-  artifact depends on it as a normal (separate) Maven dependency; it is not
-  shaded or modified, so it can be replaced with a compatible build.
+- JLayer 1.0.1 (javazoom:jlayer), GNU Lesser General Public License v2.1.
+  Pure-Java MPEG audio decoder. Judio uses it for local and streamed MPEG
+  Layers I, II, and III; its classes are neither modified nor shaded. The
+  Maven POM lists JUnit only in test scope and no runtime dependencies. The
+  LGPL-2.1 text is included as LICENSE-LGPL-2.1.txt.
+- Concentus 1.0.2 (io.github.jaredmdobson:concentus), BSD-style Opus license.
+  Pure-Java Opus decoder, including multistream support. Judio uses the
+  decoder only; Concentus does not parse Ogg pages. Its full copyright,
+  conditions, and disclaimer are reproduced in LICENSE-CONCENTUS.txt.
+- JOrbis 0.0.17 (org.jcraft:jorbis), GNU Lesser General Public License v2.1.
+  Pure-Java Vorbis decoder. The artifact includes JOrbis and Jogg classes and
+  has no runtime dependencies. It is used through its packet-decoding API;
+  Judio's Ogg container reader is separate. The LGPL-2.1 text is included as
+  LICENSE-LGPL-2.1.txt.
 - FlatLaf 3.7.2 (com.formdev:flatlaf), Apache License 2.0.
-  Used only by the optional Swing demo player; not required by the library.
+  Used only by the optional Swing demo player and not required by the library.
+
+JLayer, Concentus, JOrbis, and FlatLaf remain separate dependencies and are
+not shaded or modified in the published Judio jar. Their source/license links
+and the codec architecture decision are documented in
+docs/development/ogg-codec-architecture.md.
+
+Test media and test-only TLS key:
+
+- Ogg Opus/Vorbis tones and the MPEG Layer II tone are generated synthetic
+  audio dedicated to CC0 1.0. The full CC0 text is in
+  src/test/resources/audio/CC0-1.0.txt; see the two audio README files for
+  provenance and reproduction commands.
+- src/test/resources/audio/ogg/test-server.p12 is a self-signed localhost
+  certificate and private key used only by HTTPS loopback tests. Its password
+  is a test constant; it is not used by production code.

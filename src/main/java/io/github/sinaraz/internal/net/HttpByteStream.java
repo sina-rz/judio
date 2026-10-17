@@ -371,8 +371,15 @@ public final class HttpByteStream extends InputStream {
         int status = response.statusCode();
         InputStream in = response.body();
         if (status == 206) {
+            String contentRange = response.headers().firstValue("Content-Range").orElse(null);
+            if (offset > 0 && rangeStartFromContentRange(contentRange) != offset) {
+                closeQuietly(in);
+                throw new RemoteSourceException("resume",
+                        "server returned an invalid Content-Range for byte " + offset + ": " + redacted(uri),
+                        uri, status, null);
+            }
             rangeSupported = true;
-            long rangedTotal = totalFromContentRange(response.headers().firstValue("Content-Range").orElse(null));
+            long rangedTotal = totalFromContentRange(contentRange);
             if (rangedTotal >= 0) {
                 totalLength = rangedTotal;
             }
@@ -392,6 +399,22 @@ public final class HttpByteStream extends InputStream {
                     "HTTP " + status + " from " + redacted(uri), uri, status, null);
         }
         return in;
+    }
+
+    /** Reads the start offset from {@code Content-Range: bytes first-last/total}, or returns -1. */
+    private static long rangeStartFromContentRange(String value) {
+        if (value == null) {
+            return -1L;
+        }
+        String trimmed = value.trim();
+        if (!trimmed.regionMatches(true, 0, "bytes ", 0, 6)) {
+            return -1L;
+        }
+        int dash = trimmed.indexOf('-', 6);
+        if (dash < 0) {
+            return -1L;
+        }
+        return parseLengthOrUnknown(trimmed.substring(6, dash));
     }
 
     /** Reads the total from {@code Content-Range: bytes first-last/total}, or returns -1. */

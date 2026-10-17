@@ -11,6 +11,8 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import io.github.sinaraz.internal.decoder.FormatSniffer;
+import io.github.sinaraz.internal.ogg.OggMetadataReader;
 import io.github.sinaraz.model.CoverArt;
 import io.github.sinaraz.model.MediaLocation;
 import io.github.sinaraz.model.Track;
@@ -57,7 +59,10 @@ public final class MetadataService implements AutoCloseable {
                     if (!(track.location() instanceof MediaLocation.LocalFile(Path path))) {
                         return new Result(track.id(), null, null);
                     }
-                    return new Result(track.id(), Id3Reader.read(path).metadata(), null);
+                    TrackMetadata metadata = FormatSniffer.detect(path) == FormatSniffer.Format.OGG
+                            ? OggMetadataReader.read(path)
+                            : Id3Reader.read(path).metadata();
+                    return new Result(track.id(), metadata, null);
                 } catch (IOException | RuntimeException e) {
                     String reason = e.getMessage() != null ? e.getMessage() : e.toString();
                     return new Result(track.id(), null, "metadata unavailable: " + reason);
@@ -83,7 +88,9 @@ public final class MetadataService implements AutoCloseable {
         if (key != null && key.equals(lastCoverKey)) {
             return lastCover;
         }
-        Optional<CoverArt> art = Id3Reader.readCoverArt(file);
+        Optional<CoverArt> art = FormatSniffer.detect(file) == FormatSniffer.Format.OGG
+                ? OggMetadataReader.readCoverArt(file)
+                : Id3Reader.readCoverArt(file);
         if (key != null) {
             lastCoverKey = key;
             lastCover = art;

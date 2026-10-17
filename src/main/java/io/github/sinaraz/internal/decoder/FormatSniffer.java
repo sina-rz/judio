@@ -13,7 +13,7 @@ public final class FormatSniffer {
 
     /** Container families recognised by the sniffer. */
     public enum Format {
-        /** MPEG-1/2/2.5 audio (Layer III is decoded). */
+        /** MPEG-1/2/2.5 audio (Layers I, II, and III are decoded). */
         MP3,
         /** RIFF/WAVE. */
         WAVE,
@@ -23,7 +23,7 @@ public final class FormatSniffer {
         AU,
         /** FLAC (detected but not decoded). */
         FLAC,
-        /** Ogg container (detected but not decoded). */
+        /** Ogg container; the codec is identified from its logical-stream headers. */
         OGG,
         /** Not recognised. */
         UNKNOWN

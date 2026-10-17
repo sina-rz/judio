@@ -1,6 +1,7 @@
 package io.github.sinaraz.internal.decoder;
 
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -20,13 +21,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * MP3 tests against a generated silent MP3 ({@link TestMp3}): valid MPEG-1
- * Layer III frames with zeroed main data. No external fixture or environment
- * variable is needed, so these tests always run. The decoded PCM is silence,
- * which makes byte-equality assertions about content vacuous by construction;
- * the meaningful assertions are durations, decoded lengths and exact frame
- * positions. Set {@code JUDIO_TEST_MP3} to additionally exercise a real-world
- * file (see {@link #realFileAlsoDecodesIfConfigured()}).
+ * MP3 coverage uses a generated silent MPEG-1 Layer III stream and a committed
+ * CC0 FFmpeg-encoded MPEG Layer II fixture. The Layer III fixture has zeroed
+ * main data, so its PCM content assertions are vacuous; the Layer II fixture
+ * exercises non-silent decoded PCM and sample-accurate seeking. Set
+ * {@code JUDIO_TEST_MP3} to additionally exercise another external MPEG audio file
+ * (see {@link #realFileAlsoDecodesIfConfigured()}).
  */
 class Mp3DecoderTest {
 
@@ -75,6 +75,34 @@ class Mp3DecoderTest {
         }
     }
 
+    @Test
+    void realMpegLayerTwoFixtureDecodesAndSeeksAccurately() throws Exception {
+        Path fixture = dir.resolve("layer2.mp2");
+        try (InputStream in = getClass().getResourceAsStream("/audio/mp2-layer2-44100-stereo.mp2")) {
+            if (in == null) {
+                throw new java.io.IOException("missing MPEG Layer II test fixture");
+            }
+            Files.copy(in, fixture);
+        }
+        try (AudioDecoder decoder = DecoderFactory.standard().open(fixture)) {
+            AudioInfo info = decoder.audioInfo();
+            assertEquals(44_100, info.sampleRate());
+            assertEquals(2, info.channels());
+            assertEquals(105_984, info.frameCount());
+            assertEquals("JLayer", info.decoderName());
+            byte[] sequential = readFrames(decoder, Math.toIntExact(info.frameCount() * info.frameSize()));
+            assertEquals(105_984 * 4, sequential.length);
+            assertTrue(maxAbsSample(sequential) > 500);
+
+            int targetBytes = info.sampleRate() * info.frameSize();
+            decoder.seek(Duration.ofSeconds(1));
+            assertEquals(info.sampleRate(), decoder.framePosition());
+            byte[] afterSeek = readFrames(decoder, 8192);
+            assertArrayEquals(java.util.Arrays.copyOfRange(sequential, targetBytes, targetBytes + afterSeek.length),
+                    afterSeek, "MPEG Layer II seeking must reproduce sequential PCM");
+        }
+    }
+
     /** Seeks to several frame-exact positions, including ones inside the first frames and near the end. */
     @Test
     void generatedMp3SeeksAtManyPositions() throws Exception {
@@ -112,7 +140,16 @@ class Mp3DecoderTest {
         assertThrows(AudioPlayerException.class, () -> DecoderFactory.standard().open(f));
     }
 
-    /** Optional extra: a real encoder-produced file, only when explicitly configured. */
+    private static int maxAbsSample(byte[] pcm) {
+        int maximum = 0;
+        for (int i = 0; i + 1 < pcm.length; i += 2) {
+            int sample = (short) ((pcm[i] & 0xFF) | ((pcm[i + 1] & 0xFF) << 8));
+            maximum = Math.max(maximum, Math.abs(sample));
+        }
+        return maximum;
+    }
+
+    /** Optional extra: a real encoder-produced MP3 file, only when explicitly configured. */
     @Test
     void realFileAlsoDecodesIfConfigured() throws Exception {
         String value = System.getenv("JUDIO_TEST_MP3");
