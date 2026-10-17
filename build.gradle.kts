@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "io.github.sina-rz"
-version = "0.1.7"
+version = "0.2.0"
 
 java {
     toolchain {
@@ -50,9 +50,10 @@ dependencyLocking {
 val guiOnly by configurations.creating
 
 dependencies {
-    // JLayer 1.0.1 - LGPL (see README "Dependencies"). Pure-Java MPEG-1/2/2.5
-    // Layer I/II/III decoder. Referenced ONLY from audio.decoder.Mp3Decoder.
     implementation("javazoom:jlayer:1.0.1")
+
+    implementation("io.github.jaredmdobson:concentus:1.0.2")
+    implementation("org.jcraft:jorbis:0.0.17")
 
     guiOnly("com.formdev:flatlaf:3.7.2")
 
@@ -195,15 +196,10 @@ publishing {
 }
 
 signing {
-    // Signing is required only when a signatory is actually configured (the
-    // maintainer's machine). Contributors without keys can still build, test and
-    // publishToMavenLocal. Configure signing.keyId/password/secretKeyRingFile or
-    // the in-memory signingInMemoryKey* properties in ~/.gradle/gradle.properties.
     sign(publishing.publications["mavenJava"])
 }
 
 mavenCentral {
-    // Reads the credentials you put in ~/.gradle/gradle.properties (never in the project).
     val sonatypeUser = project.findProperty("sonatypeUsername") as String?
     val sonatypePass = project.findProperty("sonatypePassword") as String?
     if (sonatypeUser != null && sonatypePass != null) {

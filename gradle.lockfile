@@ -2,8 +2,10 @@
 # Manual edits can break the build and are not advised.
 # This file is expected to be part of source control.
 com.formdev:flatlaf:3.7.2=guiOnly
+io.github.jaredmdobson:concentus:1.0.2=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 javazoom:jlayer:1.0.1=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 org.apiguardian:apiguardian-api:1.1.2=testCompileClasspath
+org.jcraft:jorbis:0.0.17=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 org.junit.jupiter:junit-jupiter-api:5.13.4=testCompileClasspath,testRuntimeClasspath
 org.junit.jupiter:junit-jupiter-engine:5.13.4=testRuntimeClasspath
 org.junit.jupiter:junit-jupiter-params:5.13.4=testCompileClasspath,testRuntimeClasspath
