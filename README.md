@@ -18,7 +18,7 @@ Judio is available on Maven Central
 ```kotlin
 // Gradle (Kotlin DSL)
 dependencies {
-    implementation("io.github.sina-rz:judio:0.2.0")
+    implementation("io.github.sina-rz:judio:0.2.1")
 }
 ```
 
@@ -27,7 +27,7 @@ dependencies {
 <dependency>
   <groupId>io.github.sina-rz</groupId>
   <artifactId>judio</artifactId>
-  <version>0.2.0</version>
+  <version>0.2.1</version>
 </dependency>
 ```
 
