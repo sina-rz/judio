@@ -32,7 +32,7 @@ import io.github.sinaraz.model.Track;
 /** Visible queue: table, queue editing buttons, file dialogs and drag-and-drop. */
 final class QueuePanel extends JPanel {
 
-    private static final String[] AUDIO_EXTENSIONS = {"mp3", "wav", "wave", "aif", "aiff", "aifc", "au", "snd"};
+    private static final String[] AUDIO_EXTENSIONS = {"mp3", "ogg", "oga", "opus", "wav", "wave", "aif", "aiff", "aifc", "au", "snd"};
 
     private final PlayerActions actions;
     private final QueueTableModel model = new QueueTableModel();

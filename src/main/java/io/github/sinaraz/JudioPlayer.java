@@ -60,7 +60,7 @@ import io.github.sinaraz.model.Track;
 public final class JudioPlayer implements AutoCloseable {
 
     private static final List<String> AUDIO_EXTENSIONS =
-            List.of("mp3", "wav", "wave", "aif", "aiff", "aifc", "au", "snd");
+            List.of("mp3", "ogg", "oga", "opus", "wav", "wave", "aif", "aiff", "aifc", "au", "snd");
 
     private final PlaybackConfig config;
     private final QueueManager queue;

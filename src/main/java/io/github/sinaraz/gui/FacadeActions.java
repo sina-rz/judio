@@ -72,7 +72,7 @@ final class FacadeActions implements PlayerActions, AutoCloseable {
 
     @Override
     public void next() {
-        submit("next", () -> player.next());
+        submit("next", player::next);
     }
 
     @Override
