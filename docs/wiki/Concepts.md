@@ -94,18 +94,19 @@ A **listener** implements `PlaybackListener`, which has one default method per e
 - `onStateChanged`: the state changed, for example from playing to paused.
 - `onTrackChanged`: the current track changed.
 - `onTrackLoaded`: a track's file opened and its audio format is known.
+- `onTrackMetadataChanged`: asynchronous tags or metadata status for one queued track changed.
 - `onProgress`: the position moved. These updates are periodic, and they may be skipped when the
   listener is slow.
-- `onQueueChanged`: the queue contents, order, or position changed.
+- `onQueueChanged`: the queue contents, order, or position changed. Consecutive queue snapshots may be
+  coalesced when the event thread falls behind; the latest consistent view is delivered.
 - `onPlaybackCompleted`: a track played to its end.
 - `onError`: something failed, such as a corrupt file or a lost device.
 
 Add a listener with `addListener(...)`. Registering the same listener instance twice has no
 extra effect, and `removeListener(...)` stops its deliveries. Listeners run on one dedicated
-event thread: state, track, queue, and completion events are delivered in the order they were
-published, while periodic progress updates are coalesced — if a listener falls behind, progress
-events may be dropped so the latest position is delivered instead of a backlog. They never run
-on the audio thread, so a slow listener cannot cause a click or a stutter. An exception thrown
+event thread. Non-coalesced state, track, completion, and error events retain publication order;
+progress updates and consecutive queue snapshots may be coalesced when the listener falls behind.
+They never run on the audio thread, so a slow listener cannot cause a click or a stutter. An exception thrown
 by a listener is logged, and playback continues.
 
 ## Threads
@@ -116,8 +117,9 @@ judio uses three kinds of thread:
 - The **audio** thread reads decoded sound and writes it to the device.
 - The **event** thread runs your listeners.
 
-Keep two rules in mind. Do not block inside a listener for long. Close the player from your own
-thread, not from inside a listener.
+Keep listener callbacks short. Calling `close()` from a listener is safe—it never waits for its own
+event thread—but it may wait for playback/decode workers up to the configured shutdown deadline. If
+you want to keep event delivery moving, close from an application/control thread instead.
 
 ## Decoders and formats
 
@@ -167,8 +169,11 @@ Streams differ from files in three ways:
 
 A background thread keeps a read-ahead buffer full. If the connection drops, judio reconnects with an
 HTTP range request and continues where it stopped, when the server supports ranges. When the network
-stalls past the read timeout, or the server refuses the request, a `RemoteSourceException` reports the
-address and the HTTP status. Treat stream addresses as untrusted input: judio connects to
+stalls past the read timeout, or the server refuses the request, a `RemoteSourceException` reports a
+redacted address and the HTTP status. Error messages and `RemoteSourceException.uri()` omit URL
+user-info, query strings, and fragments; a cause is sanitized if its diagnostics contain those secrets.
+Keep the original URI in application state if it is needed for retry. Treat stream addresses as untrusted input:
+judio connects to
 whatever host an address names (including private or loopback addresses) and follows redirects,
 so an application that takes addresses from users should validate them first (see the
 `addUrl` Javadoc). `StreamOptions` sets the timeouts, the buffer size, the retry count, and

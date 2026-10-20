@@ -11,11 +11,11 @@ import io.github.sinaraz.model.Track;
 /**
  * Receives playback events.
  *
- * <p>Callbacks are delivered on a single dedicated event thread, in the order the
- * events occurred. They are never invoked while a core playback lock is held, so a
- * slow listener cannot stall audio. A listener that throws is logged and skipped; it
- * does not affect playback or other listeners. Progress events are coalesced: only the
- * most recent snapshot is delivered when the event thread falls behind.
+ * <p>Callbacks are delivered on a single dedicated event thread, in event order. They are never
+ * invoked while a core playback lock is held, so a slow listener cannot stall audio. A listener
+ * that throws is logged and skipped; it does not affect playback or other listeners. Progress
+ * snapshots and consecutive queue-change notifications may be coalesced when the event thread falls
+ * behind; the latest snapshot in each run is delivered, and intermediate snapshots may be skipped.
  */
 public interface PlaybackListener {
 
@@ -50,12 +50,21 @@ public interface PlaybackListener {
     default void onProgress(PlaybackSnapshot snapshot) {}
 
     /**
-     * Called when the queue's contents, order, or position changes.
+     * Called when the queue's contents, order, or position changes. Consecutive updates may be
+     * coalesced while the event thread is busy; this callback receives the latest consistent view.
      *
      * @param queue      the queue in the order the user sees it
      * @param queueState the current position, size, repeat mode, and shuffle flag
      */
     default void onQueueChanged(List<Track> queue, QueueSnapshot queueState) {}
+
+    /**
+     * Called when asynchronously loaded tags or metadata status for one queued track changes.
+     * This is a small per-track update; it does not require rebuilding a full queue snapshot.
+     *
+     * @param track the updated queue entry
+     */
+    default void onTrackMetadataChanged(Track track) {}
 
     /**
      * Called when a track plays to its end.

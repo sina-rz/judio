@@ -7,9 +7,9 @@ import java.util.Objects;
  * Base unchecked exception for every failure raised by the player.
  *
  * <p>Each exception names the {@linkplain #operation() operation} that failed, the
- * optional source file involved, and the original cause when there is one. Messages
- * are meant for humans; code should branch on the exception type or on
- * {@code model.ErrorKind} rather than parsing messages.
+ * optional source file involved, and a cause when one is safe to expose. Remote-source exceptions
+ * redact URL credentials and signed query data from messages and diagnostic causes. Messages are meant for humans;
+ * code should branch on the exception type or on {@code model.ErrorKind} rather than parsing messages.
  */
 public class AudioPlayerException extends RuntimeException {
 
