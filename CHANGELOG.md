@@ -1,3 +1,16 @@
+## [0.2.2]
+
+### Fixed
+- Preserve literal `FF 00` byte sequences in ID3v2.3 binary frames while removing only valid
+  unsynchronisation escapes.
+- Redact credentials, query strings, and fragments from remote decoder messages, URI accessors, and
+  transport-cause diagnostics.
+- Bound Ogg partial-packet accumulator capacity and release large buffers after packet completion.
+- Coalesce consecutive queue-change notifications without retaining one full queue copy per update;
+  add the default `onTrackMetadataChanged` listener callback so metadata completion is a small per-track
+  event rather than a full queue snapshot. The GUI refreshes only the affected row.
+- Apply one shared end-to-end close deadline across playback, metadata, and event workers.
+
 ## [0.2.1]
 
 ### Added
@@ -82,3 +95,4 @@ First version published to Maven Central.
 [0.1.6]: https://github.com/sina-rz/judio/releases/tag/v0.1.6
 [0.2.0]: https://github.com/sina-rz/judio/releases/tag/v0.2.0
 [0.2.1]: https://github.com/sina-rz/judio/releases/tag/v0.2.1
+[0.2.2]: https://github.com/sina-rz/judio/releases/tag/v0.2.2
