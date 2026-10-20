@@ -7,13 +7,18 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import javax.sound.sampled.AudioFormat;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import io.github.sinaraz.audio.AudioOutput;
 import io.github.sinaraz.audio.DecoderFactory;
 import io.github.sinaraz.audio.SimulatedAudioOutput;
 import io.github.sinaraz.error.PlaybackStateException;
@@ -149,11 +154,26 @@ class JudioPlayerTest {
     }
 
     @Test
-    void metadataIsLoadedAsynchronouslyForEveryQueuedTrack() throws Exception {
+    void metadataIsLoadedAsynchronouslyWithoutPublishingFullQueueSnapshotsPerTrack() throws Exception {
         newPlayer(PlaybackConfig.defaults());
+        AtomicInteger queueNotifications = new AtomicInteger();
+        AtomicInteger metadataNotifications = new AtomicInteger();
+        player.addListener(new PlaybackListener() {
+            @Override
+            public void onQueueChanged(List<Track> queue, io.github.sinaraz.model.QueueSnapshot state) {
+                queueNotifications.incrementAndGet();
+            }
+
+            @Override
+            public void onTrackMetadataChanged(Track track) {
+                metadataNotifications.incrementAndGet();
+            }
+        });
         player.addFiles(List.of(wav("m1.wav", 0.1), wav("m2.wav", 0.1)));
         Await.until("metadata resolved", WAIT,
                 () -> player.queue().stream().allMatch(t -> t.metadataStatus() != TrackMetadataStatus.PENDING));
+        Await.until("metadata notifications delivered", WAIT, () -> metadataNotifications.get() == 2);
+        assertEquals(1, queueNotifications.get(), "only the structural queue change needs a full snapshot");
     }
 
     @Test
@@ -201,6 +221,38 @@ class JudioPlayerTest {
     }
 
     @Test
+    void closeUsesOneDeadlineAcrossBlockedAudioAndListenerThreads() throws Exception {
+        PlaybackConfig config = PlaybackConfig.builder().closeTimeout(Duration.ofMillis(400)).build();
+        BlockingAudioOutput output = new BlockingAudioOutput();
+        CountDownLatch listenerEntered = new CountDownLatch(1);
+        CountDownLatch releaseListener = new CountDownLatch(1);
+        player = JudioPlayer.builder().config(config).output(() -> output).build();
+        player.addListener(new PlaybackListener() {
+            @Override
+            public void onQueueChanged(List<Track> queue, io.github.sinaraz.model.QueueSnapshot state) {
+                listenerEntered.countDown();
+                awaitUninterruptibly(releaseListener);
+            }
+        });
+        player.addFiles(List.of(wav("blocked.wav", 5.0)));
+        assertTrue(listenerEntered.await(2, TimeUnit.SECONDS), "listener should be blocked before closing");
+        player.play();
+        assertTrue(output.writeEntered.await(5, TimeUnit.SECONDS), "audio worker should be blocked in output.write");
+
+        long started = System.nanoTime();
+        try {
+            player.close();
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+            assertTrue(elapsedMillis < 650,
+                    "sequential shutdown phases must share the 400 ms deadline; elapsed=" + elapsedMillis + " ms");
+        } finally {
+            releaseListener.countDown();
+            output.releaseWrite.countDown();
+        }
+        assertTrue(output.closed.await(2, TimeUnit.SECONDS), "blocked audio worker should release its output");
+    }
+
+    @Test
     void closeIsSafeWhilePlaying() throws Exception {
         newPlayer(PlaybackConfig.defaults());
         player.addFiles(List.of(wav("long.wav", 5.0)));
@@ -209,5 +261,62 @@ class JudioPlayerTest {
         player.close();
         player.close();
         assertEquals(PlaybackState.CLOSED, snap().state());
+    }
+
+    private static void awaitUninterruptibly(CountDownLatch latch) {
+        boolean interrupted = false;
+        while (true) {
+            try {
+                latch.await();
+                break;
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static final class BlockingAudioOutput implements AudioOutput {
+        private final CountDownLatch writeEntered = new CountDownLatch(1);
+        private final CountDownLatch releaseWrite = new CountDownLatch(1);
+        private final CountDownLatch closed = new CountDownLatch(1);
+
+        @Override
+        public void open(AudioFormat format) {}
+
+        @Override
+        public void write(byte[] data, int offset, int length) {
+            writeEntered.countDown();
+            awaitUninterruptibly(releaseWrite);
+        }
+
+        @Override
+        public void start() {}
+
+        @Override
+        public void stop() {}
+
+        @Override
+        public void flush() {}
+
+        @Override
+        public void drain() {}
+
+        @Override
+        public long bufferedFrames() {
+            return 0;
+        }
+
+        @Override
+        public boolean applyVolume(double linearVolume, boolean muted) {
+            return true;
+        }
+
+        @Override
+        public void close() {
+            closed.countDown();
+        }
     }
 }

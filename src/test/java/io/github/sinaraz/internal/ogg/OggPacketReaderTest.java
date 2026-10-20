@@ -236,6 +236,38 @@ class OggPacketReaderTest {
     }
 
     @Test
+    void completedLargePacketReleasesItsAccumulatorCapacity() throws Exception {
+        byte[] packet = new byte[100_000];
+        new Random(0x0A66L).nextBytes(packet);
+
+        int firstBodyLength = 255 * 255;
+        byte[] firstLacing = new byte[255];
+        java.util.Arrays.fill(firstLacing, (byte) 255);
+        byte[] firstPage = OggTestPages.pageWithLacing(91, 0, 0x02, -1,
+                firstLacing, java.util.Arrays.copyOfRange(packet, 0, firstBodyLength));
+
+        int remaining = packet.length - firstBodyLength;
+        int fullSegments = remaining / 255;
+        int finalSegment = remaining % 255;
+        byte[] secondLacing = new byte[fullSegments + 1];
+        java.util.Arrays.fill(secondLacing, 0, fullSegments, (byte) 255);
+        secondLacing[fullSegments] = (byte) finalSegment;
+        byte[] secondPage = OggTestPages.pageWithLacing(91, 1, 0x01, 0,
+                secondLacing, java.util.Arrays.copyOfRange(packet, firstBodyLength, packet.length));
+
+        try (OggPacketReader reader = reader(OggTestPages.concat(firstPage, secondPage))) {
+            assertTrue(reader.readPage().packets().isEmpty());
+            assertEquals(64 * 1024, reader.allocatedPacketCapacityBytes());
+
+            OggPage completed = reader.readPage();
+            assertEquals(1, completed.packets().size());
+            assertArrayEquals(packet, completed.packets().getFirst().data());
+            assertEquals(4 * 1024, reader.allocatedPacketCapacityBytes(),
+                    "large completed packets must not pin their growth buffers for the stream lifetime");
+        }
+    }
+
+    @Test
     void emptyInputIsCleanPhysicalEof() throws Exception {
         try (OggPacketReader reader = reader(new byte[0])) {
             assertNull(reader.readPage());

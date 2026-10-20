@@ -16,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -143,6 +144,26 @@ class Id3ReaderTest {
         assertEquals(1, m.discNumber());
         assertFalse(m.hasCoverArt());
         assertNull(m.artist());
+    }
+
+    @Test
+    void v23UnsynchronizationPreservesLiteralFf00BeforeOrdinaryBytes() throws Exception {
+        byte[] image = {(byte) 0xFF, 0x00, 0x01, 0x7F};
+        ByteArrayOutputStream apic = new ByteArrayOutputStream();
+        apic.write(0);
+        apic.writeBytes("image/jpeg".getBytes(StandardCharsets.ISO_8859_1));
+        apic.write(0);
+        apic.write(3);
+        apic.write(0);
+        apic.writeBytes(image);
+
+        byte[] id3 = tag(3, frame("APIC", apic.toByteArray(), false));
+        id3[5] = (byte) 0x80; // tag-level ID3v2.3 unsynchronisation flag
+        Path f = write("v23-unsync-literal.mp3", id3, new byte[0]);
+
+        CoverArt cover = Id3Reader.read(f).coverArt();
+        assertNotNull(cover, "literal FF 00 bytes must not be mistaken for an unsynchronisation escape");
+        assertArrayEquals(image, cover.data());
     }
 
     @Test

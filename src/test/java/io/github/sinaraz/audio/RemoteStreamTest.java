@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Test;
 import io.github.sinaraz.JudioPlayer;
 import io.github.sinaraz.PlaybackListener;
 import io.github.sinaraz.error.RemoteSourceException;
+import io.github.sinaraz.error.UnsupportedAudioFormatException;
 import io.github.sinaraz.model.MediaLocation;
 import io.github.sinaraz.model.PlaybackError;
 import io.github.sinaraz.model.PlaybackState;
@@ -28,6 +29,7 @@ import io.github.sinaraz.support.TestAudio;
 import io.github.sinaraz.support.TestMp3;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -59,6 +61,8 @@ class RemoteStreamTest {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/tone.wav", exchange -> serve(exchange, wav, "audio/wav"));
         server.createContext("/silent.mp3", exchange -> serve(exchange, mp3, "audio/mpeg"));
+        server.createContext("/unknown", exchange -> serve(exchange,
+                new byte[] {1, 2, 3, 4, 5, 6}, "application/octet-stream"));
         server.createContext("/missing.mp3", exchange -> {
             byte[] body = "not found".getBytes(java.nio.charset.StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(404, body.length);
@@ -215,6 +219,17 @@ class RemoteStreamTest {
             finished.get(30, TimeUnit.SECONDS);
             assertEquals(PlaybackState.ENDED, player.snapshot().state());
         }
+    }
+
+    @Test
+    void decoderErrorsDoNotExposeSignedUrlCredentialsOrQueryData() {
+        URI signed = URI.create(base + "/unknown?token=abc123#private-fragment");
+        UnsupportedAudioFormatException failure = assertThrows(UnsupportedAudioFormatException.class,
+                () -> factory.open(MediaLocation.of(signed)));
+        assertFalse(failure.getMessage().contains("abc123"), failure.getMessage());
+        assertFalse(failure.getMessage().contains("token="), failure.getMessage());
+        assertFalse(failure.getMessage().contains("private-fragment"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("/unknown"), failure.getMessage());
     }
 
     @Test

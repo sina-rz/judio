@@ -1,7 +1,9 @@
 package io.github.sinaraz.internal.net;
 
+import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.time.Duration;
@@ -13,10 +15,12 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import io.github.sinaraz.audio.StreamOptions;
+import io.github.sinaraz.error.RemoteSourceException;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Loopback tests for the HTTP read-ahead stream: no external network. */
@@ -81,6 +85,16 @@ class HttpByteStreamTest {
     }
 
     @Test
+    void uriAccessorOmitsQueryAndFragment() throws Exception {
+        URI signed = URI.create(uri + "?token=abc123#private-fragment");
+        try (HttpByteStream in = new HttpByteStream(client(), signed, StreamOptions.defaults())) {
+            assertEquals(uri, in.uri());
+            assertFalse(in.uri().toString().contains("abc123"));
+            assertFalse(in.uri().toString().contains("private-fragment"));
+        }
+    }
+
+    @Test
     void offsetConstructorReadsTheTail() throws Exception {
         try (HttpByteStream in = new HttpByteStream(client(), uri, StreamOptions.defaults(), 60_000L)) {
             assertEquals(BODY.length, in.length(), "length is the whole resource, not the remainder");
@@ -88,6 +102,42 @@ class HttpByteStreamTest {
             assertEquals(BODY.length - 60_000, tail.length);
             assertArrayEquals(java.util.Arrays.copyOfRange(BODY, 60_000, BODY.length), tail);
         }
+    }
+
+    @Test
+    void failedConnectionMessageDoesNotIncludeSignedUrlQuery() throws Exception {
+        int port;
+        try (ServerSocket reservation = new ServerSocket(0)) {
+            port = reservation.getLocalPort();
+        }
+        URI signed = URI.create("http://127.0.0.1:" + port + "/audio?token=abc123#private-fragment");
+        RemoteSourceException error = assertThrows(
+                RemoteSourceException.class,
+                () -> new HttpByteStream(client(), signed, StreamOptions.defaults()));
+        assertFalse(error.getMessage().contains("abc123"), error.getMessage());
+        assertFalse(error.getMessage().contains("token="), error.getMessage());
+        assertFalse(error.getMessage().contains("private-fragment"), error.getMessage());
+    }
+
+    @Test
+    void remoteExceptionDoesNotExposeSignedUriThroughAccessorOrCause() {
+        URI signed = URI.create("https://alice:s3cr3t@example.com:8443/audio.mp3?token=abc123#private-fragment");
+        IOException cause = new IOException("request failed for " + signed);
+        RemoteSourceException error = new RemoteSourceException("open", "request failed for " + signed,
+                signed, -1, cause);
+
+        assertEquals(URI.create("https://example.com:8443/audio.mp3"), error.uri());
+        assertFalse(error.getMessage().contains("alice"));
+        assertFalse(error.getMessage().contains("s3cr3t"));
+        assertFalse(error.getMessage().contains("abc123"));
+        assertFalse(error.getMessage().contains("private-fragment"));
+        assertFalse(error.uri().toString().contains("alice"));
+        assertFalse(error.uri().toString().contains("s3cr3t"));
+        assertFalse(error.uri().toString().contains("abc123"));
+        assertFalse(error.getCause().toString().contains("alice"));
+        assertFalse(error.getCause().toString().contains("s3cr3t"));
+        assertFalse(error.getCause().toString().contains("abc123"));
+        assertFalse(error.getCause().toString().contains("private-fragment"));
     }
 
     @Test

@@ -6,8 +6,9 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
-import io.github.sinaraz.model.Track;
 import io.github.sinaraz.model.MediaLocation;
+import io.github.sinaraz.model.Track;
+import io.github.sinaraz.model.TrackMetadata;
 import io.github.sinaraz.model.TrackMetadataStatus;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -44,6 +45,23 @@ class QueueTableModelTest {
         Track failed = new Track("id-bad", MediaLocation.of(Path.of("/music/bad.mp3")), "bad", null, null, null, null, null,
                 null, null, null, null, null, null, 0L, false, TrackMetadataStatus.FAILED, "truncated frame");
         assertTrue(QueueTableModel.details(failed).contains("truncated frame"));
+    }
+
+    @Test
+    void updatesOneTrackWhenMetadataArrives() {
+        QueueTableModel model = new QueueTableModel();
+        Track first = TestTracks.track("first", "First", null, null);
+        Track original = TestTracks.track("pending", "Filename", null, null);
+        Track pending = original.withMetadata(new TrackMetadata("Tagged title", "Artist", null, null, null,
+                null, null, null, false));
+        model.update(List.of(first, original), 0);
+
+        model.updateTrack(pending);
+
+        assertEquals(2, model.getRowCount());
+        assertEquals("Tagged title", model.getValueAt(1, 1));
+        assertEquals(pending, model.trackAt(1));
+        assertEquals(first, model.trackAt(0));
     }
 
     @Test
