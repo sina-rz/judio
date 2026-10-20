@@ -10,18 +10,23 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import io.github.sinaraz.PlaybackListener;
+import io.github.sinaraz.internal.lifecycle.CloseDeadline;
+import io.github.sinaraz.internal.queue.QueueManager;
 import io.github.sinaraz.model.PlaybackSnapshot;
 
 /**
- * Delivers events to listeners on one dedicated thread, preserving order.
+ * Delivers events to listeners on one dedicated thread, preserving event order.
  *
  * <ul>
- *   <li>Publishing never blocks: events are handed to an executor, so the audio worker and
- *       control threads never wait for listener code.</li>
- *   <li>Progress is coalesced. If the event thread is slow, only the newest progress snapshot is
- *       delivered, which bounds the backlog to one pending progress event.</li>
+ *   <li>Publishing never blocks for listener code, so audio and control threads never wait on a
+ *       callback.</li>
+ *   <li>Progress and consecutive queue-state notifications are coalesced. When the event thread is
+ *       behind, the newest snapshot in each uninterrupted run is delivered.</li>
+ *   <li>Queue snapshots are materialized only when delivered, avoiding a retained full queue copy
+ *       per update. A snapshot is a consistent view at callback dispatch, not a historical journal.</li>
  *   <li>A listener that throws is logged and skipped for that event only.</li>
  *   <li>After {@link #close()} no new events are accepted; events already queued still run.</li>
  * </ul>
@@ -35,9 +40,12 @@ public final class PlaybackEventBus implements AutoCloseable {
     private final ExecutorService executor;
     private final AtomicReference<PlaybackSnapshot> pendingProgress = new AtomicReference<>();
     private final AtomicBoolean progressQueued = new AtomicBoolean(false);
+    /** Guards submission order, pendingQueue, and publication versus shutdown. */
+    private final Object submissionLock = new Object();
     /** Guards pendingProgress/progressQueued so take-and-clear is atomic. */
     private final Object progressLock = new Object();
     private final Duration closeTimeout;
+    private PendingQueueNotification pendingQueue;
     private volatile boolean closed;
 
     public PlaybackEventBus(Duration closeTimeout) {
@@ -60,39 +68,89 @@ public final class PlaybackEventBus implements AutoCloseable {
         listeners.remove(listener);
     }
 
-    /** Queues a non-progress event. */
+    /** Queues a non-progress event and ends the preceding queue-notification coalescing run. */
     public void publish(Consumer<PlaybackListener> event) {
         Objects.requireNonNull(event, "event");
-        if (closed) {
-            return;
-        }
-        try {
-            executor.execute(() -> dispatch(event));
-        } catch (RejectedExecutionException ignored) {
-            // Closed concurrently: dropping events after shutdown is intended.
+        synchronized (submissionLock) {
+            if (closed) {
+                return;
+            }
+            endQueueCoalescingRunLocked();
+            try {
+                executor.execute(() -> dispatch(event));
+            } catch (RejectedExecutionException ignored) {
+                // Closed concurrently: dropping events after shutdown is intended.
+            }
         }
     }
 
-    /** Queues a progress snapshot, replacing any older one that has not been delivered yet. */
+    /**
+     * Queues a queue-state notification. Consecutive updates replace the pending snapshot supplier.
+     * A following non-queue event ends that coalescing run, preserving callback publication order.
+     */
+    public void publishQueueChanged(Supplier<QueueManager.View> snapshotSupplier) {
+        Objects.requireNonNull(snapshotSupplier, "snapshotSupplier");
+        synchronized (submissionLock) {
+            if (closed) {
+                return;
+            }
+            if (pendingQueue != null) {
+                pendingQueue.replace(snapshotSupplier);
+                return;
+            }
+            PendingQueueNotification notification = new PendingQueueNotification(snapshotSupplier);
+            pendingQueue = notification;
+            try {
+                executor.execute(() -> deliverQueueChanged(notification));
+            } catch (RejectedExecutionException ignored) {
+                pendingQueue = null;
+            }
+        }
+    }
+
+    /** Queues progress snapshot, replacing any older one that has not been delivered yet. */
     public void publishProgress(PlaybackSnapshot snapshot) {
         Objects.requireNonNull(snapshot, "snapshot");
-        if (closed) {
-            return;
-        }
-        boolean enqueue;
-        synchronized (progressLock) {
-            pendingProgress.set(snapshot);
-            enqueue = progressQueued.compareAndSet(false, true);
-        }
-        if (enqueue) {
-            try {
-                executor.execute(this::deliverPendingProgress);
-            } catch (RejectedExecutionException ignored) {
-                synchronized (progressLock) {
-                    progressQueued.set(false);
+        synchronized (submissionLock) {
+            if (closed) {
+                return;
+            }
+            boolean enqueue;
+            synchronized (progressLock) {
+                pendingProgress.set(snapshot);
+                enqueue = progressQueued.compareAndSet(false, true);
+            }
+            if (enqueue) {
+                endQueueCoalescingRunLocked();
+                try {
+                    executor.execute(this::deliverPendingProgress);
+                } catch (RejectedExecutionException ignored) {
+                    synchronized (progressLock) {
+                        progressQueued.set(false);
+                    }
                 }
             }
         }
+    }
+
+    private void endQueueCoalescingRunLocked() {
+        // The queued notification still runs using its lazy supplier; clearing only the marker
+        // preserves event order without copying a potentially large queue on the publishing thread.
+        pendingQueue = null;
+    }
+
+    private void deliverQueueChanged(PendingQueueNotification notification) {
+        Supplier<QueueManager.View> snapshotSupplier;
+        synchronized (submissionLock) {
+            if (pendingQueue == notification) {
+                pendingQueue = null;
+            }
+            snapshotSupplier = notification.snapshotSupplier();
+        }
+        // A full queue copy can be large. Do it off the submission lock so the audio/control
+        // threads can continue publishing unrelated events while listeners are caught up.
+        QueueManager.View view = snapshotSupplier.get();
+        dispatch(listener -> listener.onQueueChanged(view.tracks(), view.state()));
     }
 
     private void deliverPendingProgress() {
@@ -125,22 +183,47 @@ public final class PlaybackEventBus implements AutoCloseable {
      */
     @Override
     public void close() {
-        if (closed) {
-            return;
+        close(CloseDeadline.after(closeTimeout));
+    }
+
+    /** Stops accepting events and waits only for the time remaining on a shared player-close deadline. */
+    public void close(CloseDeadline deadline) {
+        Objects.requireNonNull(deadline, "deadline");
+        synchronized (submissionLock) {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            pendingQueue = null;
+            executor.shutdown();
         }
-        closed = true;
-        executor.shutdown();
         if (Thread.currentThread() == dispatchThread.get()) {
             return;
         }
         try {
-            if (!executor.awaitTermination(closeTimeout.toMillis(), TimeUnit.MILLISECONDS)) {
-                LOG.log(System.Logger.Level.WARNING, "event thread did not finish within " + closeTimeout);
+            if (!executor.awaitTermination(deadline.remainingNanos(), TimeUnit.NANOSECONDS)) {
+                LOG.log(System.Logger.Level.WARNING, "event thread did not finish before the close deadline");
                 executor.shutdownNow();
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             executor.shutdownNow();
+        }
+    }
+
+    private static final class PendingQueueNotification {
+        private Supplier<QueueManager.View> supplier;
+
+        private PendingQueueNotification(Supplier<QueueManager.View> supplier) {
+            this.supplier = supplier;
+        }
+
+        private void replace(Supplier<QueueManager.View> replacement) {
+            supplier = replacement;
+        }
+
+        private Supplier<QueueManager.View> snapshotSupplier() {
+            return supplier;
         }
     }
 }
