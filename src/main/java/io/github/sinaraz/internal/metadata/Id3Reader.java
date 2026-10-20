@@ -23,15 +23,19 @@ import io.github.sinaraz.model.TrackMetadata;
  */
 public final class Id3Reader {
 
-    /** Upper bound on the ID3v2 body we are willing to read. Real tags are a few hundred KiB. */
+    /**
+     * Upper bound on the ID3v2 body we are willing to read. Real tags are a few hundred KiB.
+     */
     static final int MAX_TAG_BYTES = 16 * 1024 * 1024;
 
-    private Id3Reader() {}
-
-    /** Parsed tag content. Fields may be null. */
+    /**
+     * Parsed tag content. Fields may be null.
+     */
     public record Result(TrackMetadata metadata, CoverArt coverArt) {}
 
-    /** Reads metadata and cover art. Never throws for malformed tags; throws only for I/O errors. */
+    /**
+     * Reads metadata and cover art. Never throws for malformed tags; throws only for I/O errors.
+     */
     public static Result read(Path file) throws IOException {
         try (SeekableByteChannel ch = Files.newByteChannel(file)) {
             long size = ch.size();
@@ -89,7 +93,9 @@ public final class Id3Reader {
         }
     }
 
-    /** Extracts embedded cover art only. */
+    /**
+     * Extracts embedded cover art only.
+     */
     public static Optional<CoverArt> readCoverArt(Path file) throws IOException {
         return Optional.ofNullable(read(file).coverArt());
     }
@@ -186,15 +192,16 @@ public final class Id3Reader {
         return "application/octet-stream";
     }
 
-    /** Removes v2.3 unsynchronisation escapes ({@code FF 00} -> {@code FF}). */
+    /**
+     * Removes v2.3 unsynchronisation escapes ({@code FF 00} -> {@code FF}).
+     */
     private static byte[] removeUnsynchronisation(byte[] body, int length) {
         byte[] out = new byte[length];
         int o = 0;
         for (int i = 0; i < length; i++) {
             out[o++] = body[i];
-            if (body[i] == (byte) 0xFF && i + 1 < length && body[i + 1] == 0) {
-                i++; // skip the escape byte
-            }
+            if (body[i] == (byte) 0xFF && i + 2 < length && body[i + 1] == 0
+                    && (body[i + 2] == 0 || (body[i + 2] & 0xFF) >= 0xE0)) i++;
         }
         return java.util.Arrays.copyOf(out, o);
     }
