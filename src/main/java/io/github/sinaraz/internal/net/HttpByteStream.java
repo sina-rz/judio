@@ -97,9 +97,9 @@ public final class HttpByteStream extends InputStream {
         this.fetcher.start();
     }
 
-    /** The address this stream reads from. */
+    /** The redacted address, without user-info, query, or fragment. */
     public URI uri() {
-        return uri;
+        return URI.create(redacted(uri));
     }
 
     /**
@@ -365,8 +365,10 @@ public final class HttpByteStream extends InputStream {
             Thread.currentThread().interrupt();
             throw new RemoteSourceException("open", "interrupted while connecting to " + redacted(uri), uri, -1, e);
         } catch (IOException | IllegalArgumentException e) {
+            // Exception messages from HttpClient implementations are not safe to interpolate
+            // into user-facing diagnostics. RemoteSourceException redacts URL secrets from its cause.
             throw new RemoteSourceException(offset == 0 ? "open" : "resume",
-                    "cannot connect to " + redacted(uri) + ": " + e.getMessage(), uri, -1, e);
+                    "cannot connect to " + redacted(uri) + ": " + e.getClass().getSimpleName(), uri, -1, e);
         }
         int status = response.statusCode();
         InputStream in = response.body();
@@ -440,8 +442,8 @@ public final class HttpByteStream extends InputStream {
 
     /**
      * The address with credentials, query and fragment removed, for use in error
-     * messages (signed stream URLs routinely carry secrets in the query string).
-     * The full URI remains available programmatically via the exception.
+     * messages and diagnostic accessors (signed stream URLs routinely carry secrets in the query string).
+     * The full URI is retained only internally for the actual HTTP request.
      */
     static String redacted(URI uri) {
         try {
