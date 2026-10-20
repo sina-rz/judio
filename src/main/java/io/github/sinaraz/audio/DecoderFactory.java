@@ -132,6 +132,7 @@ public final class DecoderFactory implements DecoderProvider {
     }
 
     private AudioDecoder openRemote(URI uri) throws IOException {
+        String source = safeSource(uri);
         HttpByteStream raw = new HttpByteStream(httpClient(), uri, streamOptions);
         PushbackInputStream probe = new PushbackInputStream(raw, 16);
         try {
@@ -140,19 +141,19 @@ public final class DecoderFactory implements DecoderProvider {
             probe.unread(head, 0, n);
             InputStream buffered = new BufferedInputStream(probe, 64 * 1024);
             return switch (FormatSniffer.detect(head, n)) {
-                case MP3 -> new StreamingMp3Decoder(buffered, uri.toString(), raw.length(),
+                case MP3 -> new StreamingMp3Decoder(buffered, source, raw.length(),
                         offset -> new HttpByteStream(httpClient(), uri, streamOptions, offset));
-                case WAVE, AIFF, AU -> new StreamingPcmDecoder(buffered, uri.toString(), raw.length(),
+                case WAVE, AIFF, AU -> new StreamingPcmDecoder(buffered, source, raw.length(),
                         offset -> new HttpByteStream(httpClient(), uri, streamOptions, offset));
                 case FLAC -> throw new UnsupportedAudioFormatException("open",
-                        "FLAC streams are not supported in this build: " + uri, null, null);
-                case OGG -> OggAudioDecoder.openRemote(buffered, safeOggSource(uri), raw.length(),
+                        "FLAC streams are not supported in this build: " + source, null, null);
+                case OGG -> OggAudioDecoder.openRemote(buffered, source, raw.length(),
                         raw.supportsRanges()
                                 ? offset -> new BufferedInputStream(
                                         new HttpByteStream(httpClient(), uri, streamOptions, offset), 64 * 1024)
                                 : null);
                 case UNKNOWN -> throw new UnsupportedAudioFormatException("open",
-                        "unrecognised audio stream: " + uri, null, null);
+                        "unrecognised audio stream: " + source, null, null);
             };
         } catch (IOException | RuntimeException e) {
             raw.close();
@@ -160,9 +161,13 @@ public final class DecoderFactory implements DecoderProvider {
         }
     }
 
-    private static String safeOggSource(URI uri) {
-        String host = uri.getHost();
-        return host == null ? "remote Ogg stream" : uri.getScheme() + "://" + host;
+    /** A useful source label that omits URL credentials and signed query/fragment data. */
+    private static String safeSource(URI uri) {
+        try {
+            return new URI(uri.getScheme(), null, uri.getHost(), uri.getPort(), uri.getPath(), null, null).toString();
+        } catch (java.net.URISyntaxException e) {
+            return uri.getScheme() + "://" + uri.getHost();
+        }
     }
 
     private synchronized HttpClient httpClient() {
