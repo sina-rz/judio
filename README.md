@@ -18,7 +18,7 @@ Judio is available on Maven Central
 ```kotlin
 // Gradle (Kotlin DSL)
 dependencies {
-    implementation("io.github.sina-rz:judio:0.2.1")
+    implementation("io.github.sina-rz:judio:0.2.2")
 }
 ```
 
@@ -27,7 +27,7 @@ dependencies {
 <dependency>
   <groupId>io.github.sina-rz</groupId>
   <artifactId>judio</artifactId>
-  <version>0.2.1</version>
+  <version>0.2.2</version>
 </dependency>
 ```
 
@@ -45,6 +45,29 @@ No sound card? Add `--null-audio` to play without sound. The timing is real, but
 ```bash
 ./gradlew run --args="--null-audio song.mp3"
 ```
+
+## Example
+```java
+void main() {
+    var path = Path.of("music.mp3");
+    var finished = new CompletableFuture<Void>();
+
+    try (var player = JudioPlayer.create()) {
+        player.addListener(new PlaybackListener() {
+            @Override
+            public void onPlaybackCompleted(Track track) {
+                finished.complete(null);
+            }
+        });
+
+        player.addFiles(path);
+        player.play();
+
+        finished.join();
+    }
+}
+```
+
 
 ## What you can do
 
