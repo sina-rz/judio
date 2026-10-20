@@ -40,6 +40,9 @@ import io.github.sinaraz.model.Track;
  */
 public final class QueueManager {
 
+    /** A mutually consistent immutable snapshot of the visible queue and its state. */
+    public record View(List<Track> tracks, QueueSnapshot state) {}
+
     private final RandomGenerator random;
     private final ReentrantLock lock = new ReentrantLock();
     private final List<Track> tracks = new ArrayList<>();
@@ -352,6 +355,17 @@ public final class QueueManager {
         lock.lock();
         try {
             return List.copyOf(tracks);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Returns the user-visible order and its corresponding state under one lock acquisition. */
+    public View snapshotView() {
+        lock.lock();
+        try {
+            return new View(List.copyOf(tracks),
+                    new QueueSnapshot(currentIndex, tracks.size(), repeat, shuffle));
         } finally {
             lock.unlock();
         }
