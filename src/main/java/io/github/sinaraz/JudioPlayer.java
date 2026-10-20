@@ -24,6 +24,7 @@ import io.github.sinaraz.error.QueueException;
 import io.github.sinaraz.error.SeekNotSupportedException;
 import io.github.sinaraz.internal.engine.AudioPlaybackEngine;
 import io.github.sinaraz.internal.engine.PlaybackEventBus;
+import io.github.sinaraz.internal.lifecycle.CloseDeadline;
 import io.github.sinaraz.internal.metadata.MetadataService;
 import io.github.sinaraz.internal.queue.QueueManager;
 import io.github.sinaraz.model.AudioInfo;
@@ -194,8 +195,9 @@ public final class JudioPlayer implements AutoCloseable {
     }
 
     /**
-     * Registers a listener for state, track, progress, queue, completion, and error events.
-     * Listeners run on a dedicated event thread, never on the audio thread. An exception thrown
+     * Registers a listener for state, track, progress, queue, metadata, completion, and error events.
+     * Listeners run on a dedicated event thread, never on the audio thread. Progress and consecutive
+     * queue-change snapshots may be coalesced when that thread falls behind. An exception thrown
      * by a listener is logged and does not stop playback.
      *
      * @param listener the listener to add; adding the same instance twice has no extra effect
@@ -679,19 +681,38 @@ public final class JudioPlayer implements AutoCloseable {
 
     /**
      * Stops playback, releases the audio device, and shuts down background threads. Safe to call
-     * more than once. Waits at most {@link PlaybackConfig#closeTimeout()}.
+     * more than once. All background-worker waits share one end-to-end deadline of
+     * {@link PlaybackConfig#closeTimeout()}. The total call can exceed it while acquiring internal
+     * locks or completing synchronous resource cleanup.
      */
     @Override
     public void close() {
+        CloseDeadline deadline = CloseDeadline.after(config.closeTimeout());
         synchronized (gate) {
             if (closed) {
                 return;
             }
             closed = true;
         }
-        engine.close();
-        metadata.close();
-        bus.close();
+        RuntimeException failure = null;
+        try {
+            engine.close(deadline);
+        } catch (RuntimeException e) {
+            failure = e;
+        }
+        try {
+            metadata.close(deadline);
+        } catch (RuntimeException e) {
+            failure = appendCloseFailure(failure, e);
+        }
+        try {
+            bus.close(deadline);
+        } catch (RuntimeException e) {
+            failure = appendCloseFailure(failure, e);
+        }
+        if (failure != null) {
+            throw failure;
+        }
     }
 
     // ------------------------------------------------------------- internals
@@ -710,10 +731,18 @@ public final class JudioPlayer implements AutoCloseable {
         }
     }
 
+    private static RuntimeException appendCloseFailure(RuntimeException primary, RuntimeException next) {
+        if (primary == null) {
+            return next;
+        }
+        if (primary != next) {
+            primary.addSuppressed(next);
+        }
+        return primary;
+    }
+
     private void publishQueue() {
-        List<Track> items = queue.snapshot();
-        QueueSnapshot info = queue.snapshotInfo();
-        bus.publish(l -> l.onQueueChanged(items, info));
+        bus.publishQueueChanged(queue::snapshotView);
     }
 
     private void loadTagsAsync(Track track) {
@@ -730,7 +759,7 @@ public final class JudioPlayer implements AutoCloseable {
                 if (closed) {
                     return;
                 }
-                boolean updated = queue.update(result.trackId(), t -> {
+                queue.update(result.trackId(), t -> {
                     if (result.error() != null) {
                         return t.withMetadataFailure(result.error());
                     }
@@ -738,10 +767,7 @@ public final class JudioPlayer implements AutoCloseable {
                         return t.withMetadata(result.metadata());
                     }
                     return t.withMetadataFailure("metadata unavailable");
-                }).isPresent();
-                if (updated) {
-                    publishQueue();
-                }
+                }).ifPresent(updated -> bus.publish(l -> l.onTrackMetadataChanged(updated)));
             }
         });
     }

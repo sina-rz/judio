@@ -2,6 +2,7 @@ package io.github.sinaraz.internal.metadata;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -12,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import io.github.sinaraz.internal.decoder.FormatSniffer;
+import io.github.sinaraz.internal.lifecycle.CloseDeadline;
 import io.github.sinaraz.internal.ogg.OggMetadataReader;
 import io.github.sinaraz.model.CoverArt;
 import io.github.sinaraz.model.MediaLocation;
@@ -100,9 +102,18 @@ public final class MetadataService implements AutoCloseable {
 
     @Override
     public void close() {
+        close(CloseDeadline.after(Duration.ofSeconds(1)));
+    }
+
+    /** Stops metadata work and waits only for the time remaining on a shared player-close deadline. */
+    public void close(CloseDeadline deadline) {
+        Objects.requireNonNull(deadline, "deadline");
         executor.shutdownNow();
         try {
-            executor.awaitTermination(1, TimeUnit.SECONDS);
+            if (!executor.awaitTermination(deadline.remainingNanos(), TimeUnit.NANOSECONDS)) {
+                System.getLogger(MetadataService.class.getName()).log(System.Logger.Level.WARNING,
+                        "metadata workers did not stop before the close deadline");
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

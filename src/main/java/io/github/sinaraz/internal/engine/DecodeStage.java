@@ -11,6 +11,7 @@ import java.util.concurrent.locks.ReentrantLock;
 
 import io.github.sinaraz.audio.AudioDecoder;
 import io.github.sinaraz.audio.DecoderProvider;
+import io.github.sinaraz.internal.lifecycle.CloseDeadline;
 import io.github.sinaraz.model.AudioInfo;
 import io.github.sinaraz.model.Track;
 
@@ -169,10 +170,9 @@ final class DecodeStage {
         space.signal();
     }
 
-    /** Waits for the thread to end, up to {@code timeout}. Interrupts it if it does not. */
-    void awaitTermination(Duration timeout) throws InterruptedException {
-        thread.join(Math.max(1L, timeout.toMillis()));
-        if (thread.isAlive()) {
+    /** Waits for the thread to end, only for the time remaining on {@code deadline}. */
+    void awaitTermination(CloseDeadline deadline) throws InterruptedException {
+        if (!deadline.join(thread)) {
             thread.interrupt();
         }
     }

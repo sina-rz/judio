@@ -15,7 +15,8 @@ import java.time.Duration;
  * @param previousRestartThreshold if the position exceeds this value, "previous" restarts the
  *                                 current track instead of going to the previous one.
  * @param autoAdvanceOnError       whether a failed track is skipped to the next queue item.
- * @param closeTimeout             maximum time {@code close()} waits for worker threads.
+ * @param closeTimeout             shared end-to-end deadline for background-worker waits during
+ *                                 {@code close()}; lock acquisition and synchronous cleanup may extend total call time.
  */
 public record PlaybackConfig(
         int outputBufferBytes,

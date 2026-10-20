@@ -16,6 +16,7 @@ import io.github.sinaraz.audio.DecoderProvider;
 import io.github.sinaraz.error.PlaybackStateException;
 import io.github.sinaraz.error.SeekNotSupportedException;
 import io.github.sinaraz.error.UnsupportedAudioFormatException;
+import io.github.sinaraz.internal.lifecycle.CloseDeadline;
 import io.github.sinaraz.internal.processing.PlaybackPipeline;
 import io.github.sinaraz.model.AudioInfo;
 import io.github.sinaraz.model.MediaLocation;
@@ -62,7 +63,7 @@ public final class AudioPlaybackEngine implements AutoCloseable {
     private static final System.Logger LOG = System.getLogger(AudioPlaybackEngine.class.getName());
 
     private final PlaybackConfig config;
-    private final DecoderProvider decoderFactory;
+    private final DecoderProvider decoderFactory; //not now
     private final Supplier<AudioOutput> outputFactory;
     private final PlaybackEventBus bus;
     private final Supplier<QueueSnapshot> queueState;
@@ -547,9 +548,15 @@ public final class AudioPlaybackEngine implements AutoCloseable {
         }
     }
 
-    /** Idempotent. Stops the worker, closes the decoder and the device, and blocks up to the configured timeout. */
+    /** Idempotent. Stops the worker, closes the decoder and the device within the configured timeout. */
     @Override
     public void close() {
+        close(CloseDeadline.after(config.closeTimeout()));
+    }
+
+    /** Stops this engine using a shared end-to-end shutdown deadline. */
+    public void close(CloseDeadline deadline) {
+        Objects.requireNonNull(deadline, "deadline");
         lock.lock();
         try {
             if (closed) {
@@ -566,14 +573,12 @@ public final class AudioPlaybackEngine implements AutoCloseable {
         if (Thread.currentThread() == worker) {
             return;
         }
-        long deadline = System.nanoTime() + config.closeTimeout().toNanos();
         try {
-            worker.join(Math.max(1L, remainingMillis(deadline)));
-            if (worker.isAlive()) {
-                LOG.log(System.Logger.Level.WARNING, "audio worker did not stop in time; interrupting");
+            if (!deadline.join(worker)) {
+                LOG.log(System.Logger.Level.WARNING, "audio worker did not stop before the close deadline; interrupting");
                 worker.interrupt();
             }
-            stage.awaitTermination(Duration.ofMillis(Math.max(1L, remainingMillis(deadline))));
+            stage.awaitTermination(deadline);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
@@ -612,10 +617,6 @@ public final class AudioPlaybackEngine implements AutoCloseable {
             transitionLocked(PlaybackState.SEEKING);
         }
         wake.signalAll();
-    }
-
-    private static long remainingMillis(long deadlineNanos) {
-        return (deadlineNanos - System.nanoTime()) / 1_000_000L;
     }
 
     private void requireOpenLocked(String operation) {
