@@ -1,6 +1,5 @@
 package io.github.sinaraz.internal.ogg;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
@@ -28,6 +27,11 @@ final class OggPacketReader implements AutoCloseable {
     /** Maximum number of simultaneously open logical streams. */
     private static final int MAX_ACTIVE_STREAMS = 64;
     private static final int MAX_TOTAL_BUFFERED_PACKET_BYTES = 32 * 1024 * 1024;
+    /** Hard cap on allocated partial-packet accumulator capacity, including growth slack. */
+    private static final int MAX_TOTAL_PACKET_BUFFER_CAPACITY_BYTES = 64 * 1024 * 1024;
+    private static final int INITIAL_PACKET_BUFFER_BYTES = 4 * 1024;
+    /** Keep completed large packets from pinning large arrays for the lifetime of a logical stream. */
+    private static final int MAX_RETAINED_PACKET_BUFFER_BYTES = 64 * 1024;
     private static final int FIXED_HEADER_BYTES = 27;
     private static final int CHECKSUM_OFFSET = 22;
     private static final long UNSIGNED_INT_MASK = 0xFFFF_FFFFL;
@@ -39,6 +43,7 @@ final class OggPacketReader implements AutoCloseable {
     private final Integer rangeSerial;
     private final Map<Integer, LogicalStream> streams = new HashMap<>();
     private long bufferedPacketBytes;
+    private long allocatedPacketCapacityBytes;
     private long byteOffset;
     private long nextStreamId;
     private boolean eof;
@@ -153,6 +158,7 @@ final class OggPacketReader implements AutoCloseable {
                         throw corrupt("range seek starts on a continued Ogg page at byte " + pageOffset);
                     }
                     stream = new LogicalStream(nextStreamId++, serial);
+                    allocatedPacketCapacityBytes += stream.partial.capacity();
                     stream.nextSequence = sequence;
                     stream.packetNumber = 1L; // the first packet here is not the logical-stream BOS packet
                     streams.put(serial, stream);
@@ -168,6 +174,7 @@ final class OggPacketReader implements AutoCloseable {
                         throw corrupt("too many simultaneously active Ogg logical streams");
                     }
                     stream = new LogicalStream(nextStreamId++, serial);
+                    allocatedPacketCapacityBytes += stream.partial.capacity();
                     streams.put(serial, stream);
                     rangeStartPending = false;
                 }
@@ -198,6 +205,14 @@ final class OggPacketReader implements AutoCloseable {
                 if (lace > MAX_TOTAL_BUFFERED_PACKET_BYTES - bufferedPacketBytes) {
                     throw corrupt("Ogg packet buffering exceeds the " + MAX_TOTAL_BUFFERED_PACKET_BYTES + " byte safety limit");
                 }
+                int requiredCapacity = stream.partial.capacityFor(stream.partial.size() + lace);
+                int capacityGrowth = requiredCapacity - stream.partial.capacity();
+                if (capacityGrowth > MAX_TOTAL_PACKET_BUFFER_CAPACITY_BYTES - allocatedPacketCapacityBytes) {
+                    throw corrupt("Ogg packet accumulator capacity exceeds the "
+                            + MAX_TOTAL_PACKET_BUFFER_CAPACITY_BYTES + " byte safety limit");
+                }
+                stream.partial.ensureCapacity(requiredCapacity);
+                allocatedPacketCapacityBytes += capacityGrowth;
                 stream.partial.write(body, bodyOffset, lace);
                 bufferedPacketBytes += lace;
                 bodyOffset += lace;
@@ -206,7 +221,9 @@ final class OggPacketReader implements AutoCloseable {
                     byte[] packetData = stream.partial.toByteArray();
                     packets.add(new PendingPacket(packetNumber, packetData));
                     bufferedPacketBytes -= packetData.length;
-                    stream.partial.reset();
+                    int previousCapacity = stream.partial.capacity();
+                    stream.partial.resetForNextPacket();
+                    allocatedPacketCapacityBytes += stream.partial.capacity() - previousCapacity;
                 }
             }
             if (eos && stream.partial.size() != 0) {
@@ -228,6 +245,7 @@ final class OggPacketReader implements AutoCloseable {
             long streamId = stream.id;
             if (eos) {
                 streams.remove(serial);
+                allocatedPacketCapacityBytes -= stream.partial.capacity();
             }
             return new OggPage(streamId, serial, sequence, granule, pageOffset,
                     continued, bos, eos, completePackets);
@@ -239,11 +257,18 @@ final class OggPacketReader implements AutoCloseable {
         return byteOffset;
     }
 
+    /** Allocated capacity currently retained by incomplete packets (also used by safety tests). */
+    long allocatedPacketCapacityBytes() {
+        return allocatedPacketCapacityBytes;
+    }
+
     @Override
     public void close() throws IOException {
         if (!closed) {
             closed = true;
             streams.clear();
+            bufferedPacketBytes = 0;
+            allocatedPacketCapacityBytes = 0;
             input.close();
         }
     }
@@ -329,13 +354,60 @@ final class OggPacketReader implements AutoCloseable {
 
     private static final class LogicalStream {
         private final long id;
-        private final ByteArrayOutputStream partial = new ByteArrayOutputStream(4096);
+        private final PacketAccumulator partial = new PacketAccumulator();
         private long nextSequence;
         private long packetNumber;
 
         private LogicalStream(long id, int serial) {
             this.id = id;
             this.nextSequence = 0;
+        }
+    }
+
+    /** Grows geometrically while a packet is incomplete, then releases large arrays on reset. */
+    private static final class PacketAccumulator {
+        private byte[] data = new byte[INITIAL_PACKET_BUFFER_BYTES];
+        private int size;
+
+        private int size() {
+            return size;
+        }
+
+        private int capacity() {
+            return data.length;
+        }
+
+        private int capacityFor(int required) {
+            if (required <= data.length) {
+                return data.length;
+            }
+            int capacity = data.length;
+            while (capacity < required) {
+                capacity = Math.min(MAX_PACKET_BYTES, Math.multiplyExact(capacity, 2));
+            }
+            return capacity;
+        }
+
+        private void ensureCapacity(int capacity) {
+            if (capacity > data.length) {
+                data = java.util.Arrays.copyOf(data, capacity);
+            }
+        }
+
+        private void write(byte[] source, int offset, int length) {
+            System.arraycopy(source, offset, data, size, length);
+            size += length;
+        }
+
+        private byte[] toByteArray() {
+            return java.util.Arrays.copyOf(data, size);
+        }
+
+        private void resetForNextPacket() {
+            size = 0;
+            if (data.length > MAX_RETAINED_PACKET_BUFFER_BYTES) {
+                data = new byte[INITIAL_PACKET_BUFFER_BYTES];
+            }
         }
     }
 
