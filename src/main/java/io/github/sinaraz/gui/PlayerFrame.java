@@ -267,6 +267,11 @@ final class PlayerFrame extends JFrame {
         }
 
         @Override
+        public void onTrackMetadataChanged(Track track) {
+            SwingUtilities.invokeLater(() -> queue.applyTrackMetadata(track));
+        }
+
+        @Override
         public void onPlaybackCompleted(Track track) {
             SwingUtilities.invokeLater(() -> log.log("Finished " + track.displayName()));
         }

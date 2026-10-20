@@ -1,5 +1,6 @@
 package io.github.sinaraz.gui;
 
+import java.util.ArrayList;
 import java.util.List;
 import javax.swing.table.AbstractTableModel;
 
@@ -11,13 +12,24 @@ final class QueueTableModel extends AbstractTableModel {
     static final String[] COLUMNS = {"", "Title", "Artist", "Album", "Length", "Details"};
     private static final String PLAYING_MARKER = "\u25B6";
 
-    private List<Track> tracks = List.of();
+    private final List<Track> tracks = new ArrayList<>();
     private int currentIndex = -1;
 
     void update(List<Track> newTracks, int current) {
-        tracks = List.copyOf(newTracks);
+        tracks.clear();
+        tracks.addAll(newTracks);
         currentIndex = current;
         fireTableDataChanged();
+    }
+
+    void updateTrack(Track updated) {
+        for (int row = 0; row < tracks.size(); row++) {
+            if (tracks.get(row).id().equals(updated.id())) {
+                tracks.set(row, updated);
+                fireTableRowsUpdated(row, row);
+                return;
+            }
+        }
     }
 
     Track trackAt(int row) {

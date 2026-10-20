@@ -113,6 +113,11 @@ final class QueuePanel extends JPanel {
         updateButtons();
     }
 
+    /** Refreshes a single metadata-updated row. Runs on the Swing event thread. */
+    void applyTrackMetadata(Track track) {
+        model.updateTrack(track);
+    }
+
     void chooseFiles() {
         JFileChooser chooser = new JFileChooser();
         chooser.setDialogTitle("Add audio files");
