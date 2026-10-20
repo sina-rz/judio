@@ -117,7 +117,7 @@ public final class SimulatedAudioOutput implements AudioOutput {
 
     @Override
     public boolean applyVolume(double linearVolume, boolean muted) {
-        return false; // no hardware controls: the engine applies gain in software
+        return false;
     }
 
     @Override
