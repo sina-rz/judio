@@ -134,15 +134,28 @@ content, not its extension.
 | Ogg Vorbis, Opus | Yes, pure Java; mono/stereo |
 | FLAC and other Ogg codecs | No. They are reported as `UNSUPPORTED_FORMAT`. |
 
-Local Ogg files are scanned for page granules to report exact playable duration. Seeking resets the
-decoder and decodes/discards from the beginning, so a late seek in a long file can take time. Same-rate,
-same-channel chained Ogg streams are supported; a chain that changes sample rate or channel count is
-rejected. HTTP/HTTPS Ogg playback is incremental and duration/frame count remain unknown. When the
-server advertises byte-range support, seeking probes page granules, opens at a prior page boundary, and
-decodes codec preroll before the requested frame instead of replaying the byte prefix. Without range
-support, remote Ogg is non-seekable. Remote range seeking assumes one monotonic granule timeline;
-global seeking across chained remote Ogg segments is not indexed yet. Remote Ogg comment tags are not
-attached to the track.
+Local Ogg files are scanned for page granules to report exact playable duration. The scan also caches
+codec headers and builds a sparse, packet-aligned seek index (about one entry per second). Seeking
+jumps to a nearby indexed page and decodes only codec preroll and the remaining frames, rather than
+replaying the whole file. Same-rate, same-channel chained Ogg streams are supported, including seeks
+across chain boundaries; a chain that changes sample rate or channel count is rejected.
+
+HTTP/HTTPS Ogg playback stays incremental. For a finite, single-logical-stream file with a known byte
+length and advertised HTTP range support, one optional tail probe reads at most 256 KiB to find a
+checksum-verified terminal EOS page. Duration and frame count come from its granule, adjusted for
+Opus pre-skip and any non-zero initial granule origin. Very short files can reuse an already decoded
+terminal EOS without any probe (or range support), if the known byte length confirms the end. The
+HTTP read-ahead buffer may fetch additional bytes as usual. A missing/invalid EOS, chaining detected
+in the tail, or a failed probe leaves
+`Duration.ZERO` and zero frames; metadata failure alone does not prevent playback.
+
+Remote range seeks reuse cached codec headers and recently used page anchors. Both local and remote
+seeks decode preroll before returning the requested frame (240 ms for Opus, 16,384 frames for Vorbis).
+Opus prediction state after a cold seek can differ slightly from a full sequential decode, even at
+the same sample position. Seeking to a known end requires no extra decoding or network requests.
+When a reliable single-stream endpoint is unavailable, remote seeks safely replay from the start
+instead of treating chained granules as one global timeline. Without range support or a known byte
+length, remote Ogg is non-seekable. Remote Ogg comment tags are not attached to the track.
 
 The [README](../../README.md) has the full table, including the limits of each decoder.
 
@@ -156,14 +169,15 @@ Streams differ from files in three ways:
 
 - **Seeking depends on the decoder.** MP3 and WAV streams can seek when the server
   reports the file size and answers HTTP range requests. judio then reconnects at the matching byte
-  position. Ogg Vorbis and Opus streams are incremental; Judio reopens the URL at byte zero and
-  decodes/discards to the requested time. This works without HTTP range support but can be slow for a
-  late seek; call `JudioPlayer.seek(Duration)` or `seekRelative(Duration)`. AIFF and AU streams, and MP3/WAV servers without range support, throw
-  `SeekNotSupportedException`.
+  position. Ogg Vorbis and Opus use byte-range page probes, cached headers and codec preroll when a
+  reliable single-stream endpoint is available; otherwise they replay to the requested time. Ogg
+  still requires a known byte length and advertised range support. Call `JudioPlayer.seek(Duration)`
+  or `seekRelative(Duration)`. Unsupported sources throw `SeekNotSupportedException`.
 - **Duration may be unknown.** An MP3 with a Xing or Info header reports its exact length. Other MP3
   streams estimate it from the bitrate and file size. A WAV stream reports its length when the header
-  states a frame count. Ogg streams do not download/scan to the final granule, so their duration and
-  frame count are unknown (`Duration.ZERO` and zero frames).
+  states a frame count. A finite, range-enabled single-stream Ogg file can report granule-based
+  duration from a bounded tail probe. Live streams and unavailable end metadata retain
+  `Duration.ZERO` and zero frames.
 - **Remote tags are not loaded.** This includes Ogg Vorbis comments and OpusTags. Remote tracks have
   `Track.isRemote() == true` and metadata status `NOT_APPLICABLE`.
 

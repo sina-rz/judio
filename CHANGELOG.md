@@ -1,3 +1,28 @@
+## [Unreleased]
+
+### Added
+- Granule-based duration/frame count for finite, single-stream HTTP/HTTPS Ogg Vorbis and Opus files
+  when the server reports a byte length and advertises range support. One optional, bounded 256 KiB
+  tail probe replaces a whole-stream scan; unavailable end metadata remains unknown without failing
+  playback. Short files can reuse a fully decoded terminal EOS without a range probe when the known
+  byte length confirms the end.
+
+### Changed
+- Local Ogg seeking now uses cached headers and a sparse, packet-aligned page index with codec
+  preroll, including seeking within and across same-format chained streams.
+- Remote Ogg seeks reuse codec headers and recently used page anchors. Unknown-duration/chained
+  sources use a safe replay fallback rather than applying one stream's granules globally.
+- Opus seeks use 240 ms of preroll to improve prediction-state warmup on small-page streams.
+
+### Fixed
+- Handle Ogg streams with only one EOS audio page, large multi-page Opus pre-skip, and non-zero
+  granule origins when seeking or reporting remote duration.
+- Avoid network/decoder work for seeks to a known end or forward within already decoded PCM.
+- Keep the existing Ogg decoder usable when a replacement range request fails to open.
+- Bracket byte-range seek probes using continued/EOS pages without choosing them as unsafe cold
+  starts; search the final byte interval instead of revisiting an earlier probe window.
+- Update Ogg seeking/duration documentation and add local, HTTP, HTTPS and bounded-I/O regressions.
+
 ## [0.2.2]
 
 ### Fixed
