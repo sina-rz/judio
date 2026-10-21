@@ -32,9 +32,11 @@ import io.github.sinaraz.model.MediaLocation;
  *       sequential decoder without seeking.</li>
  *   <li>WAV, AIFF, AU (including µ-law and A-law) via {@link JavaSoundDecoder} (built-in Java Sound).
  *       Remote streams use a sequential Java Sound decoder.</li>
- *   <li>Ogg Opus via Concentus and Ogg Vorbis via JOrbis, both pure Java. Local files are indexed for
- *       exact granule-based duration and reset-and-decode seeking; remote Ogg is incremental, has
- *       unknown duration, and uses HTTP byte ranges plus codec preroll for seeking when supported.</li>
+ *   <li>Ogg Opus via Concentus and Ogg Vorbis via JOrbis, both pure Java. Local files have exact
+ *       granule-based duration and sparse, packet-aligned seek indexes. Finite single-stream remote
+ *       Ogg sources can report duration through a bounded tail probe when the server supplies a byte
+ *       length and advertises range support. Seeking reuses cached headers and byte-range page
+ *       anchors, with codec preroll; sources without reliable end metadata use a replay fallback.</li>
  *   <li>{@code http} and {@code https} streams, fetched with {@link java.net.http.HttpClient}, with
  *       read-ahead and resume after dropped connections. See {@link StreamOptions}.</li>
  * </ul>
