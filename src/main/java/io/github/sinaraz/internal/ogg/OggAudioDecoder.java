@@ -1,14 +1,21 @@
 package io.github.sinaraz.internal.ogg;
 
+import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteOrder;
+import java.nio.channels.Channels;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.Objects;
+import java.util.TreeMap;
 import java.util.function.LongFunction;
 import java.util.function.Supplier;
 
@@ -25,6 +32,8 @@ import io.github.sinaraz.model.AudioInfo;
  */
 public final class OggAudioDecoder implements AudioDecoder {
 
+    private static final int MAX_REMOTE_SEEK_POINTS = 128;
+
     private final Path localPath;
     private final OggFileIndex localIndex;
     private final String source;
@@ -32,17 +41,24 @@ public final class OggAudioDecoder implements AudioDecoder {
     private final long remoteByteLength;
     private final LongFunction<InputStream> remoteRangeOpener;
 
-    private AudioInfo info;
+    private final AudioInfo info;
     private OggPacketReader reader;
     private OggStreamDecoder localSession;
     private OggStreamDecoder remoteSession;
     private final Map<Long, OggStreamDecoder> remoteCandidates = new HashMap<>();
     private int localSegmentIndex;
+    private long localSegmentBaseFrame;
+    private boolean localRangeActive;
+    private boolean localReaderRanged;
+    private boolean localReopenNextSegment;
+    private long remoteFrameCount = -1L;
+    private RemoteSeekInfo remoteSeekInfo;
+    private OggPageProbe.PageHeader remoteFirstAudioPage;
+    private final NavigableMap<Long, OggPageProbe.PageHeader> remoteSeekPoints = new TreeMap<>();
     private long localSessionId = -1L;
     private long remoteSessionId = -1L;
     private long remoteLastEosOffset = -1L;
     private int remoteSerialNumber;
-    private boolean remoteHasSerial;
     private long remoteGranuleOffsetFrames;
     private boolean remoteGranuleOffsetReady;
     private boolean remoteRangeActive;
@@ -57,7 +73,12 @@ public final class OggAudioDecoder implements AudioDecoder {
     private boolean eof;
     private boolean closed;
 
-    private record RemoteHeaderBootstrap(OggStreamDecoder session, long firstAudioOffset) {}
+    private record RemoteSeekInfo(int serialNumber, long granuleOffsetFrames, OggHeaderParser.Codec codec,
+                                  OggPageProbe.PageHeader firstAudioPage, List<OggPage> headers) {
+        RemoteSeekInfo {
+            headers = List.copyOf(headers);
+        }
+    }
 
     private OggAudioDecoder(Path path, OggFileIndex index, InputStream input) throws IOException {
         this.localPath = path;
@@ -82,8 +103,14 @@ public final class OggAudioDecoder implements AudioDecoder {
         try {
             initializeRemote();
             OggCodecInfo first = remoteSession.info();
-            this.info = new AudioInfo(Duration.ZERO, first.sampleRate(), first.channels(), 16,
-                    first.channels() * 2, 0L, "PCM_SIGNED", ByteOrder.LITTLE_ENDIAN, this.remoteRangeOpener != null,
+            remoteSeekInfo = new RemoteSeekInfo(remoteSerialNumber, remoteGranuleOffsetFrames, first.codec(),
+                    remoteFirstAudioPage, remoteSession.headerPages());
+            remoteFrameCount = probeRemoteFrameCount();
+            Duration duration = remoteFrameCount >= 0
+                    ? durationOf(remoteFrameCount, first.sampleRate()) : Duration.ZERO;
+            this.info = new AudioInfo(duration, first.sampleRate(), first.channels(), 16,
+                    first.channels() * 2, Math.max(0L, remoteFrameCount), "PCM_SIGNED", ByteOrder.LITTLE_ENDIAN,
+                    this.remoteRangeOpener != null,
                     "Ogg " + first.codec(), decoderName(first.codec()));
         } catch (IOException | RuntimeException failure) {
             closeSessions();
@@ -124,7 +151,7 @@ public final class OggAudioDecoder implements AudioDecoder {
      * random-access seeking, so it is not used; provide a byte length and offset-aware range opener
      * with the four-argument overload instead.
      *
-     * @deprecated remote replay from byte zero is no longer used for seeking
+     * @deprecated use the offset-aware overload for seekable remote sources
      */
     @Deprecated
     public static OggAudioDecoder openRemote(InputStream input, String source,
@@ -136,7 +163,9 @@ public final class OggAudioDecoder implements AudioDecoder {
      * Opens an incremental Ogg source with optional HTTP byte-range access. The initial input begins
      * at byte zero; {@code rangeOpener} must return a fresh input beginning at exactly the requested
      * offset and owns that input until it is closed. A non-positive {@code contentLength} disables
-     * random seeking.
+     * random seeking. For a finite, single-logical-stream source, a bounded tail probe supplies
+     * granule-based duration without downloading the whole file. Missing/invalid EOS, visible
+     * chaining, or a failed optional probe leaves duration unknown without preventing playback.
      */
     public static OggAudioDecoder openRemote(InputStream input, String source, long contentLength,
                                              LongFunction<InputStream> rangeOpener) throws IOException {
@@ -167,11 +196,13 @@ public final class OggAudioDecoder implements AudioDecoder {
             throw new IllegalArgumentException("length must hold at least one frame: " + length);
         }
         int want = length - (length % frameSize);
-        if (localIndexOrRemoteFrameLimitReached()) {
+        // A remote tail probe must not stop sequential playback of an unexpected chained stream.
+        long frameLimit = local ? knownFrameCount() : -1L;
+        if (frameLimit >= 0 && framePosition >= frameLimit) {
             return -1;
         }
-        if (localIndex != null && localIndex.exactDuration()) {
-            long remaining = localIndex.frameCount() - framePosition;
+        if (frameLimit >= 0) {
+            long remaining = frameLimit - framePosition;
             long available = remaining > Long.MAX_VALUE / frameSize
                     ? Long.MAX_VALUE
                     : remaining * frameSize;
@@ -180,18 +211,8 @@ public final class OggAudioDecoder implements AudioDecoder {
 
         int written = 0;
         while (written < want) {
-            if (pendingPosition >= pendingPcm.length) {
-                pendingPcm = nextPcmPage();
-                pendingPosition = 0;
-                if (remoteRangeActive && pendingPcm != null && pendingPcm.length > 0
-                        && pendingPcmStartFrame >= 0) {
-                    framePosition = pendingPcmStartFrame;
-                    pendingPcmStartFrame = -1L;
-                }
-                if (pendingPcm == null || pendingPcm.length == 0) {
-                    pendingPcm = new byte[0];
-                    break;
-                }
+            if (!ensurePendingPcm()) {
+                break;
             }
             int available = pendingPcm.length - pendingPosition;
             int count = Math.min(want - written, available);
@@ -214,46 +235,74 @@ public final class OggAudioDecoder implements AudioDecoder {
     public void seek(Duration position) throws IOException {
         ensureOpen();
         Objects.requireNonNull(position, "position");
-        if (!local && remoteRangeOpener == null) {
+        if (!isSeekable()) {
             throw new SeekNotSupportedException("seek",
                     "this remote Ogg source does not provide HTTP byte-range access", null);
         }
         long target = framesAt(position, info.sampleRate());
-        if (local && localIndex.exactDuration()) {
-            target = Math.min(target, localIndex.frameCount());
+        long frameLimit = knownFrameCount();
+        if (frameLimit >= 0) {
+            target = Math.min(target, frameLimit);
         }
-        if (local) {
-            resetLocalReader();
-        } else {
-            target = resetRemoteReader(target);
-        }
-        if (target == 0) {
+        if (target == framePosition) {
             return;
         }
-        if (local && localIndex.exactDuration() && target == localIndex.frameCount()) {
+        if (frameLimit >= 0 && target == frameLimit) {
+            // Seeking to/past a known end needs no reopen, range requests or decoding.
+            pendingPcm = new byte[0];
+            pendingPosition = 0;
+            pendingPcmStartFrame = -1L;
             framePosition = target;
             eof = true;
             return;
         }
-
-        int frameSize = info.frameSize();
-        int scratchBytes = Math.max(frameSize, 8192 - (8192 % frameSize));
-        byte[] scratch = new byte[scratchBytes];
-        while (framePosition < target) {
-            long remaining = target - framePosition;
-            long remainingBytes = remaining > Long.MAX_VALUE / frameSize
-                    ? Long.MAX_VALUE
-                    : remaining * frameSize;
-            int request = (int) Math.min(scratch.length, remainingBytes);
-            int count = read(scratch, 0, request);
-            if (count < 0) {
-                if (local && localIndex.exactDuration() && framePosition < target) {
-                    throw new CorruptFileException("seek", "Ogg stream ended before the indexed seek target",
-                            localPath, null);
-                }
-                break;
-            }
+        if (target > framePosition
+                && target - framePosition <= (pendingPcm.length - pendingPosition) / info.frameSize()) {
+            pendingPosition += Math.toIntExact((target - framePosition) * info.frameSize());
+            framePosition = target;
+            return;
         }
+        if (local) {
+            resetLocalReader(target);
+        } else {
+            resetRemoteReader(target);
+        }
+        discardTo(target);
+        if (frameLimit >= 0 && framePosition < target) {
+            throw new CorruptFileException("seek", "Ogg stream ended before the indexed seek target",
+                    localPath, null);
+        }
+    }
+
+    /** Discards whole frames directly from page buffers, without allocating/copying scratch PCM. */
+    private void discardTo(long target) throws IOException {
+        while (framePosition < target && ensurePendingPcm()) {
+            if (framePosition > target) {
+                throw new CorruptFileException("seek", "Ogg seek anchor is after the requested frame",
+                        localPath, null);
+            }
+            long available = (pendingPcm.length - pendingPosition) / info.frameSize();
+            long skip = Math.min(target - framePosition, available);
+            pendingPosition += Math.toIntExact(skip * info.frameSize());
+            framePosition += skip;
+        }
+    }
+
+    private boolean ensurePendingPcm() throws IOException {
+        if (pendingPosition < pendingPcm.length) {
+            return true;
+        }
+        pendingPcm = nextPcmPage();
+        pendingPosition = 0;
+        if (pendingPcm == null || pendingPcm.length == 0) {
+            pendingPcm = new byte[0];
+            return false;
+        }
+        if (pendingPcmStartFrame >= 0) {
+            framePosition = pendingPcmStartFrame;
+            pendingPcmStartFrame = -1L;
+        }
+        return true;
     }
 
     @Override
@@ -310,6 +359,16 @@ public final class OggAudioDecoder implements AudioDecoder {
                 eof = true;
                 return null;
             }
+            if (localReopenNextSegment) {
+                OggFileIndex.Segment next = localIndex.segments().get(localSegmentIndex);
+                OggPacketReader replacement = new OggPacketReader(openLocalAt(next.bosOffset()),
+                        source, next.bosOffset(), next.serialNumber());
+                OggPacketReader old = reader;
+                reader = replacement;
+                localReaderRanged = true;
+                localReopenNextSegment = false;
+                old.close();
+            }
             OggPage page = reader.readPage();
             if (page == null) {
                 OggFileIndex.Segment expected = localIndex.segments().get(localSegmentIndex);
@@ -321,7 +380,7 @@ public final class OggAudioDecoder implements AudioDecoder {
                 return null;
             }
             OggFileIndex.Segment segment = localIndex.segments().get(localSegmentIndex);
-            if (page.streamId() != segment.streamId()) {
+            if (page.serialNumber() != segment.serialNumber() || page.byteOffset() < segment.bosOffset()) {
                 continue;
             }
             if (localSession == null) {
@@ -333,8 +392,13 @@ public final class OggAudioDecoder implements AudioDecoder {
                         localPath, null);
             }
             byte[] pcm = localSession.processPage(page);
+            if (localRangeActive && pcm.length > 0) {
+                pcm = positionRangePage(page, pcm, segment.granuleOffsetFrames(), localSegmentBaseFrame,
+                        segment.codecInfo().channels());
+            }
             if (page.endOfStream()) {
-                if (segment.exactDuration() && localSession.outputFrames() != segment.frameCount()) {
+                if (!localRangeActive && segment.exactDuration()
+                        && localSession.outputFrames() != segment.frameCount()) {
                     throw new CorruptFileException("read",
                             "decoded Ogg sample count " + localSession.outputFrames()
                                     + " differs from indexed count " + segment.frameCount(),
@@ -344,6 +408,9 @@ public final class OggAudioDecoder implements AudioDecoder {
                 localSession = null;
                 localSessionId = -1L;
                 localSegmentIndex++;
+                localSegmentBaseFrame += segment.frameCount();
+                localReopenNextSegment = localReaderRanged;
+                localRangeActive = false;
             }
             if (pcm.length > 0) {
                 return pcm;
@@ -384,9 +451,10 @@ public final class OggAudioDecoder implements AudioDecoder {
                 if (remoteSession.headersReady() && remoteSampleRate == 0) {
                     acceptRemoteFormat(remoteSession.info());
                 }
-                updateRemoteGranuleOffset(remoteSession);
+                updateRemoteGranuleOffset(page, remoteSession);
                 if (remoteRangeActive && pcm.length > 0) {
-                    pendingPcmStartFrame = pageStartFrame(page, pcm, remoteSession.info().channels());
+                    pcm = positionRangePage(page, pcm, remoteGranuleOffsetFrames, 0L,
+                            remoteSession.info().channels());
                 }
                 if (pcm.length > 0) {
                     return pcm;
@@ -407,13 +475,12 @@ public final class OggAudioDecoder implements AudioDecoder {
                 remoteSession = candidate;
                 remoteSessionId = page.streamId();
                 remoteSerialNumber = page.serialNumber();
-                remoteHasSerial = true;
                 remoteCandidates.remove(page.streamId());
                 clearRemoteCandidates();
                 if (candidate.headersReady()) {
                     acceptRemoteFormat(candidate.info());
                 }
-                updateRemoteGranuleOffset(candidate);
+                updateRemoteGranuleOffset(page, candidate);
                 if (page.endOfStream()) {
                     remoteSelectedEnded = true;
                     remoteLastEosOffset = page.byteOffset();
@@ -443,7 +510,7 @@ public final class OggAudioDecoder implements AudioDecoder {
         }
     }
 
-    private void updateRemoteGranuleOffset(OggStreamDecoder session) {
+    private void updateRemoteGranuleOffset(OggPage page, OggStreamDecoder session) {
         if (remoteGranuleOffsetReady && session.hasAudio()) {
             return;
         }
@@ -458,209 +525,189 @@ public final class OggAudioDecoder implements AudioDecoder {
             throw new CorruptFileException("open", "Ogg granule origin overflows the supported range", null, e);
         }
         remoteGranuleOffsetReady = true;
+        remoteFirstAudioPage = new OggPageProbe.PageHeader(page.byteOffset(),
+                Math.toIntExact(reader.byteOffset() - page.byteOffset()), page.serialNumber(),
+                page.sequenceNumber(), page.granulePosition(), page.continued(),
+                page.beginningOfStream(), page.endOfStream());
     }
 
-    private long pageStartFrame(OggPage page, byte[] pcm, int channels) {
-        if (page.granulePosition() < 0 || !remoteGranuleOffsetReady) {
+    /** Maps cold-start page output back onto the absolute timeline, including unusually large Opus pre-skip. */
+    private byte[] positionRangePage(OggPage page, byte[] pcm, long granuleOffset, long baseFrame, int channels) {
+        int frameSize = channels * 2;
+        long endFrame = page.granulePosition() - granuleOffset;
+        long startFrame = endFrame - pcm.length / frameSize;
+        if (startFrame < 0) {
+            long trimFrames = Math.min(-startFrame, pcm.length / frameSize);
+            pcm = Arrays.copyOfRange(pcm, Math.toIntExact(trimFrames * frameSize), pcm.length);
+            startFrame += trimFrames;
+        }
+        pendingPcmStartFrame = baseFrame + Math.max(0L, startFrame);
+        return pcm;
+    }
+
+    private long probeRemoteFrameCount() {
+        if (remoteFirstAudioPage == null) {
             return -1L;
         }
-        long endFrame = page.granulePosition() - remoteGranuleOffsetFrames;
-        long pageFrames = pcm.length / (channels * 2L);
-        return Math.max(0L, endFrame - pageFrames);
+        try {
+            OggPageProbe.PageHeader eosPage;
+            if (remoteFirstAudioPage.endOfStream() && remoteFirstAudioPage.byteOffset()
+                    + remoteFirstAudioPage.pageLength() == remoteByteLength) {
+                // Very short files can already have a fully validated EOS in the startup PCM.
+                // A known byte length proves there is no later chain, even without HTTP ranges.
+                eosPage = remoteFirstAudioPage;
+            } else if (remoteRangeOpener != null) {
+                eosPage = OggPageProbe.findLastEos(remoteRangeOpener, remoteByteLength,
+                        remoteSeekInfo.serialNumber(), remoteFirstAudioPage.byteOffset());
+            } else {
+                return -1L;
+            }
+            if (eosPage == null || eosPage.sequenceNumber() < remoteFirstAudioPage.sequenceNumber()
+                    || eosPage.byteOffset() < remoteFirstAudioPage.byteOffset()
+                    || eosPage.granulePosition() < remoteFirstAudioPage.granulePosition()
+                    || eosPage.granulePosition() < remoteSeekInfo.granuleOffsetFrames()) {
+                return -1L;
+            }
+            return eosPage.granulePosition() - remoteSeekInfo.granuleOffsetFrames();
+        } catch (IOException | RuntimeException ignored) {
+            // Optional metadata must never make an otherwise playable stream fail to open. In
+            // particular, some servers advertise ranges but reject the actual tail request.
+            return -1L;
+        }
     }
 
-    private void resetLocalReader() throws IOException {
-        InputStream replacement = Files.newInputStream(localPath);
-        OggPacketReader newReader = new OggPacketReader(replacement, source);
-        closeSessions();
+    private void resetLocalReader(long targetFrame) throws IOException {
+        int segmentIndex = 0;
+        long baseFrame = 0L;
+        while (segmentIndex + 1 < localIndex.segments().size()) {
+            OggFileIndex.Segment segment = localIndex.segments().get(segmentIndex);
+            if (!segment.exactDuration() || targetFrame - baseFrame < segment.frameCount()) {
+                break;
+            }
+            baseFrame += segment.frameCount();
+            segmentIndex++;
+        }
+        OggFileIndex.Segment segment = localIndex.segments().get(segmentIndex);
+        long granuleTarget = Math.max(0L, saturatingAdd(targetFrame - baseFrame,
+                segment.granuleOffsetFrames()) - prerollFrames(segment.codecInfo().codec()));
+        OggFileIndex.SeekPoint anchor = segment.atOrBefore(granuleTarget);
+        long offset = anchor == null ? segment.bosOffset() : anchor.byteOffset();
+        OggStreamDecoder session = anchor == null ? null : new OggStreamDecoder(source, segment.headers());
+        if (session != null) {
+            session.prepareForRangeStart(anchor.firstAudioPage());
+        }
+        OggPacketReader replacement;
+        try {
+            InputStream input = openLocalAt(offset);
+            replacement = new OggPacketReader(input, source, offset, segment.serialNumber());
+        } catch (IOException | RuntimeException failure) {
+            if (session != null) {
+                session.close();
+            }
+            throw failure;
+        }
         OggPacketReader old = reader;
-        reader = newReader;
+        closeSessions();
+        reader = replacement;
+        localSession = session;
+        localSessionId = anchor == null ? -1L : 0L;
+        localSegmentIndex = segmentIndex;
+        localSegmentBaseFrame = baseFrame;
+        localRangeActive = anchor != null;
+        localReaderRanged = true;
+        localReopenNextSegment = false;
+        clearPending(baseFrame);
         if (old != null) {
             old.close();
         }
-        localSegmentIndex = 0;
-        localSessionId = -1L;
-        pendingPcm = new byte[0];
-        pendingPosition = 0;
-        framePosition = 0;
-        eof = false;
     }
 
-    private long resetRemoteReader(long targetFrame) throws IOException {
-        if (remoteRangeOpener == null) {
-            throw new SeekNotSupportedException("seek",
-                    "this remote Ogg source does not provide HTTP byte-range access", null);
-        }
-        int selectedSerial = remoteSerialNumber;
-        boolean hadSelectedSerial = remoteHasSerial;
-        long granuleOffset = remoteGranuleOffsetFrames;
-        boolean hadGranuleOffset = remoteGranuleOffsetReady;
-
-        OggPacketReader oldReader = reader;
-        closeSessions();
-        reader = null;
-        pendingPcm = new byte[0];
-        pendingPosition = 0;
-        pendingPcmStartFrame = -1L;
-        framePosition = 0L;
-        eof = false;
-        remoteRangeActive = false;
-        remoteSelectedEnded = false;
-        remoteLastEosOffset = -1L;
-        remoteSessionId = -1L;
-        remoteSampleRate = 0;
-        remoteChannels = 0;
-        remoteSawSupported = false;
-        remoteSerialNumber = 0;
-        remoteHasSerial = false;
-        remoteGranuleOffsetFrames = 0L;
-        remoteGranuleOffsetReady = false;
-
+    private InputStream openLocalAt(long offset) throws IOException {
+        SeekableByteChannel channel = Files.newByteChannel(localPath);
         try {
-            if (oldReader != null) {
-                oldReader.close();
-            }
-            if (targetFrame <= 0) {
-                resetRemoteFromStart();
-                return 0L;
-            }
-            if (!hadSelectedSerial || !hadGranuleOffset) {
-                throw new SeekNotSupportedException("seek",
-                        "remote Ogg stream has no established granule origin for range seeking", null);
-            }
-
-            RemoteHeaderBootstrap bootstrap = bootstrapRemoteHeaders(selectedSerial);
-            OggStreamDecoder freshSession = bootstrap.session();
-            if (freshSession.info().sampleRate() != info.sampleRate()
-                    || freshSession.info().channels() != info.channels()) {
-                freshSession.close();
-                throw new UnsupportedAudioFormatException("seek",
-                        "remote Ogg format changed while preparing a range seek", null, null);
-            }
-
-            int prerollFrames = freshSession.info().codec() == OggHeaderParser.Codec.OPUS
-                    ? 3_840 : 16_384;
-            long targetGranule = saturatingAdd(targetFrame, granuleOffset);
-            long granuleTarget = Math.max(0L, targetGranule - prerollFrames);
-            OggPageProbe.PageHeader anchor = OggPageProbe.findPageAtOrBefore(
-                    remoteRangeOpener, remoteByteLength, selectedSerial, granuleTarget);
-            if (anchor == null && bootstrap.firstAudioOffset() > 0) {
-                anchor = OggPageProbe.findFirstAudioPage(remoteRangeOpener, remoteByteLength, selectedSerial);
-            }
-            if (anchor == null || anchor.byteOffset() <= 0
-                    || (bootstrap.firstAudioOffset() >= 0
-                    && anchor.byteOffset() < bootstrap.firstAudioOffset())) {
-                freshSession.close();
-                throw new SeekNotSupportedException("seek",
-                        "remote Ogg has no standalone nonzero audio-page boundary for this range seek", null);
-            }
-
-            boolean firstAudioPage = anchor.byteOffset() == bootstrap.firstAudioOffset();
-            freshSession.prepareForRangeStart(firstAudioPage);
-            InputStream rangedInput;
-            try {
-                rangedInput = remoteRangeOpener.apply(anchor.byteOffset());
-            } catch (RuntimeException failure) {
-                freshSession.close();
-                throw failure;
-            }
-            if (rangedInput == null) {
-                freshSession.close();
-                throw new IOException("remote Ogg range opener returned no input stream");
-            }
-            OggPacketReader newReader;
-            try {
-                newReader = new OggPacketReader(rangedInput, source, anchor.byteOffset(), selectedSerial);
-            } catch (RuntimeException failure) {
-                freshSession.close();
-                try {
-                    rangedInput.close();
-                } catch (IOException closeFailure) {
-                    failure.addSuppressed(closeFailure);
-                }
-                throw failure;
-            }
-
-            reader = newReader;
-            remoteSession = freshSession;
-            remoteSessionId = 0L;
-            remoteSerialNumber = selectedSerial;
-            remoteHasSerial = true;
-            remoteGranuleOffsetFrames = granuleOffset;
-            remoteGranuleOffsetReady = true;
-            remoteSampleRate = info.sampleRate();
-            remoteChannels = info.channels();
-            remoteSawSupported = true;
-            remoteRangeActive = true;
-            return targetFrame;
+            channel.position(offset);
+            return new BufferedInputStream(Channels.newInputStream(channel), 64 * 1024);
         } catch (IOException | RuntimeException failure) {
-            closeSessions();
-            if (reader != null) {
-                try {
-                    reader.close();
-                } catch (IOException closeFailure) {
-                    failure.addSuppressed(closeFailure);
-                }
-                reader = null;
-            }
-            eof = true;
-            closed = true;
-            throw failure;
-        }
-    }
-
-    private RemoteHeaderBootstrap bootstrapRemoteHeaders(int serial) throws IOException {
-        InputStream input = remoteRangeOpener.apply(0L);
-        if (input == null) {
-            throw new IOException("remote Ogg range opener returned no input stream");
-        }
-        OggPacketReader probe;
-        try {
-            probe = new OggPacketReader(input, source);
-        } catch (RuntimeException failure) {
             try {
-                input.close();
+                channel.close();
             } catch (IOException closeFailure) {
                 failure.addSuppressed(closeFailure);
             }
             throw failure;
         }
+    }
 
-        OggStreamDecoder session = null;
-        try {
-            while (true) {
-                OggPage page = probe.readPage();
-                if (page == null) {
-                    throw new CorruptFileException("seek", "remote Ogg ended before the first seekable audio page",
-                            null, null);
-                }
-                if (page.serialNumber() != serial) {
-                    continue;
-                }
-                if (page.beginningOfStream()) {
-                    if (session != null) {
-                        session.close();
-                    }
-                    session = new OggStreamDecoder(source);
-                }
-                if (session == null) {
-                    continue;
-                }
-                boolean audioPacket = session.processHeaderPage(page);
-                if (session.headersReady() && audioPacket && !page.continued()
-                        && page.granulePosition() > 0) {
-                    RemoteHeaderBootstrap result = new RemoteHeaderBootstrap(session, page.byteOffset());
-                    probe.close();
-                    session = null;
-                    return result;
-                }
-            }
-        } finally {
-            if (session != null) {
-                session.close();
-            }
-            probe.close();
+    private void resetRemoteReader(long targetFrame) throws IOException {
+        // Without a trustworthy single-stream end, replay is the safe fallback: granules reset
+        // across chained streams and cannot be treated as one globally increasing seek index.
+        if (targetFrame == 0 || remoteFrameCount < 0 || remoteSeekInfo == null) {
+            resetRemoteFromStart();
+            return;
         }
+        RemoteSeekInfo seek = remoteSeekInfo;
+        long granuleTarget = Math.max(0L, saturatingAdd(targetFrame, seek.granuleOffsetFrames())
+                - prerollFrames(seek.codec()));
+        OggPageProbe.PageHeader anchor = null;
+        Map.Entry<Long, OggPageProbe.PageHeader> cached = remoteSeekPoints.floorEntry(granuleTarget);
+        if (cached != null && granuleTarget - cached.getKey() <= info.sampleRate() * 2L) {
+            anchor = cached.getValue();
+        }
+        if (anchor == null) {
+            anchor = OggPageProbe.findPageAtOrBefore(remoteRangeOpener, remoteByteLength,
+                    seek.serialNumber(), granuleTarget);
+            if (anchor != null) {
+                remoteSeekPoints.put(anchor.granulePosition(), anchor);
+                if (remoteSeekPoints.size() > MAX_REMOTE_SEEK_POINTS) {
+                    remoteSeekPoints.pollFirstEntry();
+                }
+            }
+        }
+        OggPageProbe.PageHeader first = seek.firstAudioPage();
+        if (anchor == null || anchor.byteOffset() < first.byteOffset()) {
+            anchor = first;
+        }
+        if (anchor.continued() || anchor.byteOffset() <= 0) {
+            resetRemoteFromStart();
+            return;
+        }
+        OggStreamDecoder session = new OggStreamDecoder(source, seek.headers());
+        session.prepareForRangeStart(anchor.byteOffset() == first.byteOffset());
+        OggPacketReader replacement;
+        try {
+            InputStream input = remoteRangeOpener.apply(anchor.byteOffset());
+            if (input == null) {
+                throw new IOException("remote Ogg range opener returned no input stream");
+            }
+            replacement = new OggPacketReader(input, source, anchor.byteOffset(), seek.serialNumber());
+        } catch (RuntimeException | IOException failure) {
+            session.close();
+            throw failure;
+        }
+        // Build first, swap second: a failed range probe/open leaves the old decoder usable.
+        OggPacketReader old = reader;
+        closeSessions();
+        reader = replacement;
+        remoteSession = session;
+        remoteSessionId = 0L;
+        remoteSerialNumber = seek.serialNumber();
+        remoteGranuleOffsetFrames = seek.granuleOffsetFrames();
+        remoteGranuleOffsetReady = true;
+        remoteSampleRate = info.sampleRate();
+        remoteChannels = info.channels();
+        remoteSelectedEnded = false;
+        remoteSawSupported = true;
+        remoteLastEosOffset = -1L;
+        remoteRangeActive = true;
+        clearPending(0L);
+        if (old != null) {
+            old.close();
+        }
+    }
+
+    private static int prerollFrames(OggHeaderParser.Codec codec) {
+        // Opus requires at least 80 ms at 48 kHz; 240 ms also lets prediction state settle on
+        // streams with very small pages. Vorbis needs overlap/block warmup.
+        return codec == OggHeaderParser.Codec.OPUS ? 11_520 : 16_384;
     }
 
     private void resetRemoteFromStart() throws IOException {
@@ -668,16 +715,10 @@ public final class OggAudioDecoder implements AudioDecoder {
         if (input == null) {
             throw new IOException("remote Ogg range opener returned no input stream");
         }
-        try {
-            reader = new OggPacketReader(input, source);
-        } catch (RuntimeException failure) {
-            try {
-                input.close();
-            } catch (IOException closeFailure) {
-                failure.addSuppressed(closeFailure);
-            }
-            throw failure;
-        }
+        OggPacketReader replacement = new OggPacketReader(input, source);
+        OggPacketReader old = reader;
+        closeSessions();
+        reader = replacement;
         remoteSessionId = -1L;
         remoteLastEosOffset = -1L;
         remoteSampleRate = 0;
@@ -685,15 +726,26 @@ public final class OggAudioDecoder implements AudioDecoder {
         remoteSelectedEnded = false;
         remoteSawSupported = false;
         remoteSerialNumber = 0;
-        remoteHasSerial = false;
         remoteGranuleOffsetFrames = 0L;
         remoteGranuleOffsetReady = false;
         remoteRangeActive = false;
+        clearPending(0L);
+        if (old != null) {
+            old.close();
+        }
         initializeRemote();
         if (remoteSampleRate != info.sampleRate() || remoteChannels != info.channels()) {
             throw new UnsupportedAudioFormatException("seek",
                     "remote Ogg format changed while reopening the stream", null, null);
         }
+    }
+
+    private void clearPending(long frame) {
+        pendingPcm = new byte[0];
+        pendingPosition = 0;
+        pendingPcmStartFrame = -1L;
+        framePosition = frame;
+        eof = false;
     }
 
     private static long saturatingAdd(long left, long right) {
@@ -723,8 +775,8 @@ public final class OggAudioDecoder implements AudioDecoder {
         remoteCandidates.clear();
     }
 
-    private boolean localIndexOrRemoteFrameLimitReached() {
-        return local && localIndex.exactDuration() && framePosition >= localIndex.frameCount();
+    private long knownFrameCount() {
+        return local ? (localIndex.exactDuration() ? localIndex.frameCount() : -1L) : remoteFrameCount;
     }
 
     private AudioInfo makeLocalAudioInfo(OggFileIndex index) {
