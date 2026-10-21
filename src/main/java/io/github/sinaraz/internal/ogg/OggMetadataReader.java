@@ -10,7 +10,6 @@ import io.github.sinaraz.model.TrackMetadata;
 /** Content-based reader for Vorbis comments in local Ogg Opus/Vorbis files. */
 public final class OggMetadataReader {
 
-    private OggMetadataReader() {}
 
     /** Reads the first supported Ogg audio stream's comment header without scanning its audio payload. */
     public static TrackMetadata read(Path path) throws IOException {

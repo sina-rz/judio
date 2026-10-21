@@ -31,7 +31,6 @@ public final class FormatSniffer {
 
     private static final int HEADER_BYTES = 16;
 
-    private FormatSniffer() {}
 
     /**
      * Detects the container from the first bytes of {@code file}.

@@ -9,7 +9,6 @@ import io.github.sinaraz.error.CorruptFileException;
 /** Packet-level duration checks used both by the local index scan and the incremental decoder. */
 final class OggPacketDuration {
 
-    private OggPacketDuration() {}
 
     static int opusSamples(byte[] packet) {
         if (packet.length == 0 || packet.length > 61_440) {
