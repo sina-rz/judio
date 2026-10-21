@@ -16,8 +16,6 @@ final class OggPictureParser {
     private static final int MAX_IMAGE_BYTES = 8 * 1024 * 1024;
     private static final int MAX_BASE64_BYTES = (MAX_IMAGE_BYTES * 4 + 2) / 3 + 8;
 
-    private OggPictureParser() {}
-
     static Optional<CoverArt> fromTags(OggHeaderParser.Codec codec, byte[] packet) {
         int prefixLength = switch (codec) {
             case OPUS -> 8;
@@ -44,7 +42,7 @@ final class OggPictureParser {
             String coverMime = "";
             for (int i = 0; i < count; i++) {
                 long length = cursor.readUnsigned32();
-                if (length > packet.length || length > Integer.MAX_VALUE) {
+                if (length > packet.length) {
                     return Optional.empty();
                 }
                 int offset = cursor.position();
@@ -63,23 +61,26 @@ final class OggPictureParser {
                 if (valueLength <= 0 || valueLength > MAX_BASE64_BYTES) {
                     continue;
                 }
-                if (key.equals("METADATA_BLOCK_PICTURE")) {
-                    ParsedPicture picture = parsePicture(decodeBase64(packet, valueOffset, valueLength));
-                    if (picture != null) {
-                        if (picture.type() == 3) {
-                            return Optional.of(picture.cover());
-                        }
-                        if (firstPicture == null) {
-                            firstPicture = picture.cover();
+                switch (key) {
+                    case "METADATA_BLOCK_PICTURE" -> {
+                        ParsedPicture picture = parsePicture(decodeBase64(packet, valueOffset, valueLength));
+                        if (picture != null) {
+                            if (picture.type() == 3) {
+                                return Optional.of(picture.cover());
+                            }
+                            if (firstPicture == null) {
+                                firstPicture = picture.cover();
+                            }
                         }
                     }
-                } else if (key.equals("COVERART")) {
-                    byte[] bytes = decodeBase64(packet, valueOffset, valueLength);
-                    if (bytes != null && bytes.length > 0 && coverArtBytes == null) {
-                        coverArtBytes = bytes;
+                    case "COVERART" -> {
+                        byte[] bytes = decodeBase64(packet, valueOffset, valueLength);
+                        if (bytes != null && bytes.length > 0 && coverArtBytes == null) {
+                            coverArtBytes = bytes;
+                        }
                     }
-                } else if (key.equals("COVERARTMIME")) {
-                    coverMime = new String(packet, valueOffset, valueLength, StandardCharsets.UTF_8).strip();
+                    case "COVERARTMIME" ->
+                            coverMime = new String(packet, valueOffset, valueLength, StandardCharsets.UTF_8).strip();
                 }
             }
             if (firstPicture != null) {
