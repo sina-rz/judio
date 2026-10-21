@@ -17,7 +17,6 @@ import io.github.sinaraz.model.TrackMetadata;
 /** Scans a local Ogg file for codec headers, chain boundaries, and granule-derived duration. */
 final class OggFileProbe {
 
-    private OggFileProbe() {}
 
     static OggFileIndex scan(Path path) throws IOException {
         String source = path.getFileName() == null ? "local Ogg file" : path.getFileName().toString();
@@ -67,6 +66,7 @@ final class OggFileProbe {
                     if (state == selected && count.audioPackets() > 0) {
                         state.timing.apply(page.granulePosition(), page.endOfStream(), count.decodedFrames(),
                                 count.audioPackets(), count.lastPacketFrames());
+                        state.addSeekPoint(page);
                         state.hasAudio = true;
                     } else if (state == selected && page.endOfStream()) {
                         state.timing.apply(page.granulePosition(), true, 0, 0, 0);
@@ -92,7 +92,7 @@ final class OggFileProbe {
                                     "chained Ogg streams change sample rate or channel count", path, null);
                         }
                         long segmentFrames = state.timing.totalOutputFrames();
-                        segments.add(new OggFileIndex.Segment(state.streamId, codecInfo, segmentFrames, true));
+                        segments.add(state.segment(segmentFrames, true));
                         totalFrames = addFrames(totalFrames, segmentFrames, source);
                         lastSelectedEosOffset = page.byteOffset();
                         streams.remove(state.streamId);
@@ -117,7 +117,7 @@ final class OggFileProbe {
                     throw new UnsupportedAudioFormatException("open",
                             "chained Ogg streams change sample rate or channel count", path, null);
                 }
-                segments.add(new OggFileIndex.Segment(selected.streamId, codecInfo, 0L, false));
+                segments.add(selected.segment(0L, false));
                 exact = false;
             }
             if (segments.isEmpty()) {
@@ -241,6 +241,8 @@ final class OggFileProbe {
         private final long streamId;
         private final long bosOffset;
         private final OggHeaderParser headers;
+        private final List<OggFileIndex.SeekPoint> seekPoints = new ArrayList<>();
+        private int serialNumber;
         private boolean selected;
         private boolean hasAudio;
         private long previousVorbisBlockSize = -1L;
@@ -253,6 +255,7 @@ final class OggFileProbe {
         }
 
         private PageCount accept(OggPage page) {
+            serialNumber = page.serialNumber();
             long decodedFrames = 0;
             long audioPackets = 0;
             long lastPacketFrames = 0;
@@ -288,6 +291,27 @@ final class OggFileProbe {
                 throw corrupt("Ogg logical stream ended before its headers completed", "Ogg stream");
             }
             return new PageCount(decodedFrames, audioPackets, lastPacketFrames);
+        }
+
+        private void addSeekPoint(OggPage page) {
+            // A continued page cannot reconstruct its first packet after a random access. EOS
+            // pages need the previous granule for end trimming and are not safe cold starts either.
+            if (page.continued() || page.beginningOfStream() || page.endOfStream()) {
+                return;
+            }
+            // At most about one entry per second; do not retain every 20 ms packet/page.
+            if (seekPoints.isEmpty() || page.granulePosition()
+                    - seekPoints.getLast().granulePosition() >= headers.info().sampleRate()) {
+                seekPoints.add(new OggFileIndex.SeekPoint(page.byteOffset(), page.granulePosition(), !hasAudio));
+            }
+        }
+
+        private OggFileIndex.Segment segment(long frames, boolean exactDuration) {
+            OggCodecInfo info = headers.info();
+            long codecOffset = info.codec() == OggHeaderParser.Codec.OPUS ? info.preSkip() : 0L;
+            long granuleOffset = addFrames(timing.initialOriginFrames(), codecOffset, "Ogg granule origin");
+            return new OggFileIndex.Segment(streamId, info, frames, exactDuration,
+                    bosOffset, serialNumber, granuleOffset, headers.headerPages(), seekPoints);
         }
 
         private void close() {
