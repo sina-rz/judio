@@ -1,4 +1,4 @@
-## [Unreleased]
+## [0.2.3]
 
 ### Added
 - Granule-based duration/frame count for finite, single-stream HTTP/HTTPS Ogg Vorbis and Opus files
@@ -121,3 +121,4 @@ First version published to Maven Central.
 [0.2.0]: https://github.com/sina-rz/judio/releases/tag/v0.2.0
 [0.2.1]: https://github.com/sina-rz/judio/releases/tag/v0.2.1
 [0.2.2]: https://github.com/sina-rz/judio/releases/tag/v0.2.2
+[0.2.3]: https://github.com/sina-rz/judio/releases/tag/v0.2.3

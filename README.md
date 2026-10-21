@@ -18,7 +18,7 @@ Judio is available on Maven Central
 ```kotlin
 // Gradle (Kotlin DSL)
 dependencies {
-    implementation("io.github.sina-rz:judio:0.2.2")
+    implementation("io.github.sina-rz:judio:0.2.3")
 }
 ```
 
@@ -27,7 +27,7 @@ dependencies {
 <dependency>
   <groupId>io.github.sina-rz</groupId>
   <artifactId>judio</artifactId>
-  <version>0.2.2</version>
+  <version>0.2.3</version>
 </dependency>
 ```
 
@@ -87,8 +87,6 @@ void main() {
 | MP3 | Supported (MPEG-1/2/2.5, Layers I, II and III) |
 | WAV, AIFF, AU | Supported (PCM and the built-in Java Sound formats) |
 | Ogg Vorbis, Opus | Supported in pure Java (mono/stereo) |
-| Internet streams (MP3, WAV, AIFF, AU) | Supported. MP3 and WAV can seek if the server supports it |
-| HTTP/HTTPS Ogg Vorbis and Opus | Supported incrementally; seeks use HTTP byte ranges and codec preroll when the server advertises range support. Duration is unknown. |
 | FLAC and other Ogg codecs | Not supported |
 
 
