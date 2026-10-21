@@ -1,6 +1,8 @@
 package io.github.sinaraz.internal.ogg;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 
 import com.jcraft.jogg.Packet;
 import com.jcraft.jorbis.Comment;
@@ -21,6 +23,7 @@ final class OggHeaderParser {
     private static final int MAX_HEADER_PACKET_BYTES = 8 * 1024 * 1024;
 
     private final String source;
+    private final List<OggPage> headerPages = new ArrayList<>(3);
     private Codec codec;
     private int headerCount;
     private OpusHead opusHead;
@@ -81,7 +84,7 @@ final class OggHeaderParser {
                 return PacketRole.UNSUPPORTED;
             }
             headerCount = 1;
-            return PacketRole.HEADER;
+            return rememberHeader(page, packet);
         }
 
         if (page.endOfStream()) {
@@ -126,7 +129,19 @@ final class OggHeaderParser {
                         -1, 0, 0, null, metadata);
             }
         }
+        return rememberHeader(page, packet);
+    }
+
+    /** Only the two or three codec headers are retained, never audio packets sharing their page. */
+    private PacketRole rememberHeader(OggPage page, OggPacket packet) {
+        headerPages.add(new OggPage(page.streamId(), page.serialNumber(), page.sequenceNumber(),
+                page.granulePosition(), page.byteOffset(), page.continued(), page.beginningOfStream(),
+                page.endOfStream(), List.of(packet)));
         return PacketRole.HEADER;
+    }
+
+    List<OggPage> headerPages() {
+        return List.copyOf(headerPages);
     }
 
     boolean ready() {
@@ -224,6 +239,7 @@ final class OggHeaderParser {
     void close() {
         if (!closed) {
             closed = true;
+            headerPages.clear();
             if (vorbisInfo != null) {
                 vorbisInfo.clear();
                 vorbisInfo = null;
