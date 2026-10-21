@@ -18,8 +18,6 @@ final class OggCommentParser {
     private static final int MAX_COMMENT_COUNT = 8192;
     private static final int MAX_TEXT_BYTES = OggPacketReader.MAX_PACKET_BYTES;
 
-    private OggCommentParser() {}
-
     static TrackMetadata parseOpusTags(byte[] packet) {
         requirePrefix(packet, "OpusTags".getBytes(StandardCharsets.US_ASCII), "OpusTags");
         Cursor cursor = new Cursor(packet, 8, packet.length);
