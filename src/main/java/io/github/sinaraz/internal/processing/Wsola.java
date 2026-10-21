@@ -298,7 +298,7 @@ public final class Wsola {
         accBase += n;
     }
 
-    // ------------------------------------------------------------------ buffers
+    // ------------------------------------------------ buffers
 
     private void append(float[] src, int frames) {
         ensureIn(inFrames + frames);
