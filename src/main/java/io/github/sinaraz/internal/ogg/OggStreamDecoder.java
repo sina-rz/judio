@@ -1,6 +1,7 @@
 package io.github.sinaraz.internal.ogg;
 
 import java.io.ByteArrayOutputStream;
+import java.util.List;
 
 import io.github.sinaraz.error.CorruptFileException;
 
@@ -19,6 +20,26 @@ final class OggStreamDecoder implements AutoCloseable {
     OggStreamDecoder(String source) {
         this.source = source == null ? "Ogg stream" : source;
         this.headers = new OggHeaderParser(this.source);
+    }
+
+    /** Recreates codec state from the already validated headers, without file or network I/O. */
+    OggStreamDecoder(String source, List<OggPage> headerPages) {
+        this(source);
+        try {
+            for (OggPage page : headerPages) {
+                processHeaderPage(page);
+            }
+            if (!headers.ready()) {
+                throw new IllegalArgumentException("cached Ogg headers are incomplete");
+            }
+        } catch (RuntimeException failure) {
+            close();
+            throw failure;
+        }
+    }
+
+    List<OggPage> headerPages() {
+        return headers.headerPages();
     }
 
     /** Processes the complete packets on one physical page and returns trimmed PCM16LE for that page. */
