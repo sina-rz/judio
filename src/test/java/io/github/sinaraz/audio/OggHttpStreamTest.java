@@ -12,6 +12,8 @@ import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
@@ -30,6 +32,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import io.github.sinaraz.JudioPlayer;
 import io.github.sinaraz.PlaybackListener;
@@ -63,6 +66,8 @@ class OggHttpStreamTest {
     private static byte[] opusMono;
     private static byte[] opusStereo;
     private static StreamOptions streamOptions;
+    private static ExecutorService serverExecutor;
+    private static byte[] largeOgg;
 
     @BeforeAll
     static void startServers() throws Exception {
@@ -70,6 +75,10 @@ class OggHttpStreamTest {
         vorbisStereo = resource("vorbis-stereo.ogg");
         opusMono = resource("opus-mono.ogg");
         opusStereo = resource("opus-stereo.ogg");
+        largeOgg = new byte[opusMono.length * 32];
+        for (int i = 0; i < 32; i++) {
+            System.arraycopy(opusMono, 0, largeOgg, i * opusMono.length, opusMono.length);
+        }
 
         KeyStore serverKeys = loadTestKeyStore();
         SSLContext serverContext = serverContext(serverKeys);
@@ -82,13 +91,16 @@ class OggHttpStreamTest {
                 .sslContext(clientContext)
                 .build();
 
+        serverExecutor = Executors.newVirtualThreadPerTaskExecutor();
         httpServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        httpServer.setExecutor(serverExecutor);
         installContexts(httpServer);
         httpServer.start();
         httpPort = httpServer.getAddress().getPort();
 
         httpsServer = HttpsServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         httpsServer.setHttpsConfigurator(new HttpsConfigurator(serverContext));
+        httpsServer.setExecutor(serverExecutor);
         installContexts(httpsServer);
         httpsServer.start();
         httpsPort = httpsServer.getAddress().getPort();
@@ -101,6 +113,9 @@ class OggHttpStreamTest {
         }
         if (httpsServer != null) {
             httpsServer.stop(0);
+        }
+        if (serverExecutor != null) {
+            serverExecutor.close();
         }
     }
 
@@ -127,16 +142,16 @@ class OggHttpStreamTest {
         try (AudioDecoder decoder = DecoderFactory.standard(streamOptions).open(MediaLocation.of(uri))) {
             assertEquals(sampleRate, decoder.audioInfo().sampleRate());
             assertEquals(channels, decoder.audioInfo().channels());
-            assertEquals(Duration.ZERO, decoder.audioInfo().duration());
-            assertEquals(0, decoder.audioInfo().frameCount());
+            assertEquals(Duration.ofMillis(2400), decoder.audioInfo().duration());
+            assertEquals(frames, decoder.audioInfo().frameCount());
             assertTrue(decoder.audioInfo().seekable());
             assertTrue(decoder.isSeekable());
             byte[] pcm = readAll(decoder);
             assertEquals(frames * channels * 2L, pcm.length);
             assertEquals(frames, decoder.framePosition());
 
-            long targetFrame = sampleRate * 21L / 10L;
-            decoder.seek(Duration.ofMillis(2100));
+            long targetFrame = sampleRate * 23L / 10L;
+            decoder.seek(Duration.ofMillis(2300));
             assertEquals(targetFrame, decoder.framePosition());
             int frameSize = channels * 2;
             byte[] afterSeek = readN(decoder, 8192 - (8192 % frameSize));
@@ -163,11 +178,44 @@ class OggHttpStreamTest {
     void remoteOggWithoutRangeSupportRemainsPlayableButNotSeekable() throws Exception {
         URI uri = URI.create("http://127.0.0.1:" + httpPort + "/no-range.ogg");
         try (AudioDecoder decoder = DecoderFactory.standard(streamOptions).open(MediaLocation.of(uri))) {
+            assertEquals(Duration.ZERO, decoder.audioInfo().duration());
+            assertEquals(0, decoder.audioInfo().frameCount());
             assertFalse(decoder.audioInfo().seekable());
             assertFalse(decoder.isSeekable());
             assertThrows(SeekNotSupportedException.class, () -> decoder.seek(Duration.ofSeconds(1)));
             assertTrue(readAll(decoder).length > 0);
         }
+    }
+
+    @Test
+    void chunkedOggWithoutContentLengthKeepsUnknownDurationAndDoesNotProbeRanges() throws Exception {
+        URI uri = URI.create("http://127.0.0.1:" + httpPort + "/unknown-length.ogg");
+        int rangesBefore = rangeRequests.size();
+        try (AudioDecoder decoder = DecoderFactory.standard(streamOptions).open(MediaLocation.of(uri))) {
+            assertEquals(Duration.ZERO, decoder.audioInfo().duration());
+            assertEquals(0, decoder.audioInfo().frameCount());
+            assertFalse(decoder.isSeekable());
+            assertEquals(115_200L * 2, readAll(decoder).length);
+        }
+        assertEquals(rangesBefore, rangeRequests.size());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"http", "https"})
+    void refusedOptionalTailRequestDoesNotFailAnOtherwisePlayableOgg(String scheme) throws Exception {
+        int port = scheme.equals("https") ? httpsPort : httpPort;
+        URI uri = URI.create(scheme + "://127.0.0.1:" + port + "/range-refused.ogg");
+        int rangesBefore = rangeRequests.size();
+        try (AudioDecoder decoder = DecoderFactory.standard(streamOptions).open(MediaLocation.of(uri))) {
+            assertEquals(Duration.ZERO, decoder.audioInfo().duration());
+            assertEquals(0, decoder.audioInfo().frameCount());
+            assertTrue(readN(decoder, 8192).length > 0);
+            decoder.seek(Duration.ofSeconds(1));
+            assertEquals(48_000, decoder.framePosition());
+            assertTrue(readN(decoder, 8192).length > 0);
+        }
+        assertTrue(rangeRequests.subList(rangesBefore, rangeRequests.size()).stream()
+                .anyMatch(OggHttpStreamTest::isNonzeroRangeRequest), "the optional tail request must be exercised");
     }
 
     private static Stream<Arguments> playerFixtures() {
@@ -223,6 +271,9 @@ class OggHttpStreamTest {
             player.prepare(0);
             AudioInfo info = loaded.get(10, TimeUnit.SECONDS);
             assertEquals(sampleRate, info.sampleRate());
+            assertEquals(Duration.ofMillis(2400), info.duration());
+            assertEquals(frames, info.frameCount());
+            assertEquals(info.duration(), player.snapshot().duration());
             assertTrue(info.seekable());
 
             player.seek(Duration.ofSeconds(1));
@@ -245,14 +296,25 @@ class OggHttpStreamTest {
         server.createContext("/opus-mono.ogg", exchange -> serve(exchange, opusMono));
         server.createContext("/opus-stereo.ogg", exchange -> serve(exchange, opusStereo));
         server.createContext("/no-range.ogg", exchange -> serveWithoutRanges(exchange, opusMono));
-    }
-
-    private static void installContexts(HttpsServer server) {
-        server.createContext("/vorbis-mono.ogg", exchange -> serve(exchange, vorbisMono));
-        server.createContext("/vorbis-stereo.ogg", exchange -> serve(exchange, vorbisStereo));
-        server.createContext("/opus-mono.ogg", exchange -> serve(exchange, opusMono));
-        server.createContext("/opus-stereo.ogg", exchange -> serve(exchange, opusStereo));
-        server.createContext("/no-range.ogg", exchange -> serveWithoutRanges(exchange, opusMono));
+        server.createContext("/unknown-length.ogg", exchange -> {
+            exchange.getResponseHeaders().set("Content-Type", "audio/ogg");
+            exchange.getResponseHeaders().set("Accept-Ranges", "bytes");
+            exchange.sendResponseHeaders(200, 0); // chunked response with no Content-Length
+            try (OutputStream out = exchange.getResponseBody()) {
+                out.write(opusMono);
+            }
+        });
+        server.createContext("/range-refused.ogg", exchange -> {
+            exchange.getResponseHeaders().set("Accept-Ranges", "bytes");
+            String range = exchange.getRequestHeaders().getFirst("Range");
+            if (range != null) {
+                rangeRequests.add(exchange.getRequestURI().getPath() + ":" + range);
+                exchange.sendResponseHeaders(403, -1);
+                exchange.close();
+            } else {
+                serveWithoutRanges(exchange, largeOgg);
+            }
+        });
     }
 
     private static void serveWithoutRanges(HttpExchange exchange, byte[] body) throws IOException {

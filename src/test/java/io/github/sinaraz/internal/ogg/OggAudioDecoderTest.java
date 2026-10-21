@@ -106,7 +106,7 @@ class OggAudioDecoderTest {
             assertEquals(wanted, got);
             int start = Math.toIntExact(targetFrame * channels * 2L);
             assertTrue(Arrays.equals(Arrays.copyOfRange(sequential, start, start + wanted), actual),
-                    "reset-and-discard seek must match sequential decoding");
+                    "indexed seek must match sequential decoding");
 
             decoder.seek(Duration.ofSeconds(100));
             assertEquals(frames, decoder.framePosition());

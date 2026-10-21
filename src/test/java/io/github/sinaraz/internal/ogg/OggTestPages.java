@@ -71,6 +71,83 @@ final class OggTestPages {
         return joined;
     }
 
+    /** Builds a longer single logical stream using real codec packets, with independently counted granules. */
+    static RepeatedAudio repeatAudio(byte[] input, int repetitions, int packetsPerPage) throws IOException {
+        OggHeaderParser headers = new OggHeaderParser("repeated test audio");
+        try {
+            List<byte[]> headerPackets = new ArrayList<>();
+            List<OggPacket> audio = new ArrayList<>();
+            int serial = 0;
+            try (OggPacketReader reader = new OggPacketReader(new ByteArrayInputStream(input), "test audio")) {
+                OggPage page;
+                while ((page = reader.readPage()) != null) {
+                    serial = page.serialNumber();
+                    for (OggPacket packet : page.packets()) {
+                        OggHeaderParser.PacketRole role = headers.accept(page, packet);
+                        if (role == OggHeaderParser.PacketRole.HEADER) {
+                            headerPackets.add(packet.data());
+                        } else if (role == OggHeaderParser.PacketRole.AUDIO) {
+                            audio.add(packet);
+                        }
+                    }
+                }
+            }
+            List<byte[]> pages = new ArrayList<>();
+            pages.add(page(serial, 0, 0x02, 0, List.of(headerPackets.getFirst())));
+            pages.add(page(serial, 1, 0, 0, headerPackets.subList(1, headerPackets.size())));
+            List<byte[]> packets = new ArrayList<>();
+            long granule = 0L;
+            long sequence = 2L;
+            int previousBlock = -1;
+            for (int repetition = 0; repetition < repetitions; repetition++) {
+                for (int i = 0; i < audio.size(); i++) {
+                    OggPacket packet = audio.get(i);
+                    if (headers.codec() == OggHeaderParser.Codec.OPUS) {
+                        granule += OggPacketDuration.opusSamples(packet.data());
+                    } else {
+                        int block = OggPacketDuration.vorbisBlockSize(headers.vorbisInfo(), packet);
+                        granule += previousBlock < 0 ? 0 : (previousBlock + block) / 4L;
+                        previousBlock = block;
+                    }
+                    packets.add(packet.data());
+                    boolean last = repetition == repetitions - 1 && i == audio.size() - 1;
+                    if (packets.size() == packetsPerPage || last) {
+                        pages.add(page(serial, sequence++, last ? 0x04 : 0, granule, packets));
+                        packets = new ArrayList<>();
+                    }
+                }
+            }
+            OggCodecInfo info = headers.info();
+            long frames = granule - (info.codec() == OggHeaderParser.Codec.OPUS ? info.preSkip() : 0L);
+            return new RepeatedAudio(concat(pages.toArray(byte[][]::new)), frames, info.sampleRate(), info.channels());
+        } finally {
+            headers.close();
+        }
+    }
+
+    record RepeatedAudio(byte[] bytes, long frames, int sampleRate, int channels) {}
+
+    static byte[] withOpusPreSkip(byte[] input, int preSkip) {
+        byte[] result = input.clone();
+        int body = 27 + (result[26] & 0xFF);
+        result[body + 10] = (byte) preSkip;
+        result[body + 11] = (byte) (preSkip >>> 8);
+        fixChecksum(result, 0, pageLength(result, 0));
+        return result;
+    }
+
+    static byte[] withSerial(byte[] input, int serial) {
+        byte[] result = input.clone();
+        int offset = 0;
+        while (offset < result.length) {
+            int length = pageLength(result, offset);
+            putLe32(result, offset + 14, serial);
+            fixChecksum(result, offset, length);
+            offset += length;
+        }
+        return result;
+    }
+
     static byte[] shiftPositiveGranules(byte[] input, long shift) {
         byte[] shifted = input.clone();
         int offset = 0;
