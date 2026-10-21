@@ -13,111 +13,104 @@ final class OggPageProbe {
     private static final int MAX_BISECTIONS = 32;
     private static final int MAX_PAGE_BYTES = 27 + 255 + 255 * 255;
 
-    private OggPageProbe() {}
 
+    /** Reads at most one tail window; missing EOS is not a reason to download the entire stream. */
     static PageHeader findLastEos(LongFunction<InputStream> rangeOpener, long contentLength, int serial)
             throws IOException {
-        long end = contentLength;
-        while (end > 0) {
-            long start = Math.max(0, end - SCAN_BYTES);
-            int requestBytes = (int) (end - start);
-            List<PageHeader> pages = scan(rangeOpener, start, requestBytes);
-            PageHeader lastEos = null;
-            for (PageHeader page : pages) {
-                if (page.serialNumber() == serial && page.endOfStream() && page.granulePosition() >= 0) {
-                    lastEos = page;
-                }
-            }
-            if (lastEos != null || start == 0) {
-                return lastEos;
-            }
-            end = start + MAX_PAGE_BYTES;
-        }
-        return null;
+        return findLastEos(rangeOpener, contentLength, serial, -1L);
     }
 
-    /** Returns the last complete audio page at or before {@code granuleTarget}. */
+    /**
+     * With a known first audio offset, only accept a terminal EOS for that logical stream. Chained
+     * streams seen in the tail are deliberately left with unknown duration, not a last-link duration.
+     */
+    static PageHeader findLastEos(LongFunction<InputStream> rangeOpener, long contentLength, int serial,
+                                  long firstAudioOffset) throws IOException {
+        if (contentLength <= 0) {
+            return null;
+        }
+        long start = Math.max(0L, contentLength - SCAN_BYTES);
+        List<PageHeader> pages = scan(rangeOpener, start, (int) (contentLength - start));
+        PageHeader lastEos = null;
+        for (PageHeader page : pages) {
+            if (firstAudioOffset >= 0 && page.beginningOfStream() && page.byteOffset() > firstAudioOffset) {
+                return null;
+            }
+            if (page.serialNumber() == serial && page.endOfStream() && page.granulePosition() >= 0) {
+                if (firstAudioOffset >= 0 && lastEos != null) {
+                    return null;
+                }
+                lastEos = page;
+            }
+        }
+        if (firstAudioOffset >= 0 && lastEos != null
+                && lastEos.byteOffset() + lastEos.pageLength() != contentLength) {
+            return null;
+        }
+        return lastEos;
+    }
+
+    /** Returns a packet-aligned audio page whose end granule is at or before the preroll target. */
     static PageHeader findPageAtOrBefore(LongFunction<InputStream> rangeOpener, long contentLength,
                                          int serial, long granuleTarget) throws IOException {
         if (contentLength <= 0 || granuleTarget < 0) {
             return null;
         }
-        long low = 0;
+        long low = 0L;
         long high = contentLength;
         PageHeader best = null;
-        for (int attempt = 0; attempt < MAX_BISECTIONS && low < high; attempt++) {
-            if (high - low <= SCAN_BYTES) {
-                break;
-            }
+        for (int attempt = 0; attempt < MAX_BISECTIONS && high - low > SCAN_BYTES; attempt++) {
             long probeOffset = low + ((high - low) >>> 1);
             List<PageHeader> pages = scan(rangeOpener, probeOffset,
                     (int) Math.min(SCAN_BYTES, contentLength - probeOffset));
-            PageHeader floor = null;
+            long advance = low;
+            boolean safeFloorSeen = false;
             PageHeader ceiling = null;
             for (PageHeader page : pages) {
-                if (page.serialNumber() != serial || page.granulePosition() <= 0
-                        || page.continued() || page.beginningOfStream() || page.endOfStream()) {
+                // Continued and EOS pages still bracket time even though they are not safe places
+                // to initialize the codec. Ignoring them can jump past the desired seek interval.
+                if (page.serialNumber() != serial || page.granulePosition() <= 0 || page.beginningOfStream()) {
                     continue;
                 }
-                if (page.granulePosition() <= granuleTarget) {
-                    floor = page;
-                } else {
+                if (page.granulePosition() > granuleTarget) {
                     ceiling = page;
                     break;
                 }
-            }
-            if (floor != null) {
-                best = floor;
-                low = floor.byteOffset() + 1;
-                if (ceiling != null) {
-                    high = ceiling.byteOffset();
+                advance = page.byteOffset() + page.pageLength();
+                if (isSeekPoint(page, serial, granuleTarget)
+                        && (best == null || page.byteOffset() > best.byteOffset())) {
+                    best = page;
+                    safeFloorSeen = true;
                 }
-            } else if (ceiling != null) {
-                high = ceiling.byteOffset();
+            }
+            if (advance > low && safeFloorSeen) {
+                low = advance;
+                if (ceiling != null) {
+                    high = Math.max(low, ceiling.byteOffset());
+                }
             } else {
-                // The selected logical stream can be sparse in a multiplexed file. Move through
-                // this range fragment rather than repeatedly probing the same bytes.
-                long advance = pages.isEmpty() ? SCAN_BYTES
-                        : Math.max(1, pages.getLast().byteOffset() - probeOffset + pages.getLast().pageLength());
-                low = probeOffset + Math.min(contentLength - probeOffset, advance);
+                // If this logical stream is sparse, prefer an earlier, safe anchor over skipping
+                // unknown audio. The caller can always fall back to its cached first audio page.
+                high = probeOffset;
             }
         }
 
-        long finalStart = best == null ? 0 : best.byteOffset();
-        long finalBytes = Math.min(SCAN_BYTES * 2L, contentLength - finalStart);
-        List<PageHeader> tail = scan(rangeOpener, finalStart, (int) finalBytes);
-        for (PageHeader page : tail) {
-            if (page.serialNumber() == serial && page.granulePosition() > 0
-                    && !page.continued() && !page.beginningOfStream() && !page.endOfStream()
-                    && page.granulePosition() <= granuleTarget) {
+        // Search the remaining interval, not the window after the old best point. Include room
+        // for a page that starts just before the interval ends but crosses the fragment boundary.
+        int finalBytes = (int) Math.min(SCAN_BYTES + (long) MAX_PAGE_BYTES, contentLength - low);
+        for (PageHeader page : scan(rangeOpener, low, finalBytes)) {
+            if (isSeekPoint(page, serial, granuleTarget)
+                    && (best == null || page.byteOffset() > best.byteOffset())) {
                 best = page;
             }
         }
         return best;
     }
 
-    /** Returns the first complete audio page for a serial, skipping its BOS and codec-header pages. */
-    static PageHeader findFirstAudioPage(LongFunction<InputStream> rangeOpener, long contentLength, int serial)
-            throws IOException {
-        long offset = 0;
-        while (offset < contentLength) {
-            int requestBytes = (int) Math.min(SCAN_BYTES, contentLength - offset);
-            List<PageHeader> pages = scan(rangeOpener, offset, requestBytes);
-            for (PageHeader page : pages) {
-                if (page.serialNumber() == serial && page.granulePosition() > 0
-                        && !page.continued() && !page.beginningOfStream() && !page.endOfStream()) {
-                    return page;
-                }
-            }
-            if (pages.isEmpty()) {
-                offset += requestBytes;
-            } else {
-                PageHeader last = pages.getLast();
-                long next = last.byteOffset() + last.pageLength();
-                offset = next > offset ? next : offset + requestBytes;
-            }
-        }
-        return null;
+    private static boolean isSeekPoint(PageHeader page, int serial, long granuleTarget) {
+        return page.serialNumber() == serial && page.granulePosition() > 0
+                && page.granulePosition() <= granuleTarget
+                && !page.continued() && !page.beginningOfStream() && !page.endOfStream();
     }
 
     private static List<PageHeader> scan(LongFunction<InputStream> rangeOpener, long startOffset, int maxBytes)
@@ -127,6 +120,9 @@ final class OggPageProbe {
         }
         byte[] bytes;
         try (InputStream input = rangeOpener.apply(startOffset)) {
+            if (input == null) {
+                throw new IOException("Ogg range opener returned no input stream");
+            }
             bytes = input.readNBytes(maxBytes);
         }
         List<PageHeader> pages = new ArrayList<>();
@@ -146,7 +142,8 @@ final class OggPageProbe {
             int segmentCount = bytes[offset + 26] & 0xFF;
             int tableEnd = offset + 27 + segmentCount;
             if (tableEnd > bytes.length) {
-                break;
+                offset++;
+                continue;
             }
             byte[] header = new byte[27];
             System.arraycopy(bytes, offset, header, 0, header.length);
